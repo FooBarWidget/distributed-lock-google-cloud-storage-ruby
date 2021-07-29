@@ -11,6 +11,8 @@ require_relative 'utils'
 module DistributedLock
   module GoogleCloudStorage
     class Lock
+      DEFAULT_INSTANCE_IDENTITY = SecureRandom.hex(12).freeze
+
       include Utils
 
       # Creates a new Lock instance.
@@ -23,18 +25,16 @@ module DistributedLock
       # @param bucket_name [String] The name of a Cloud Storage bucket in which to place the lock.
       #   This bucket must already exist.
       # @param path [String] The object path within the bucket to use for locking.
-      # @param app_identity [String] A unique identity for this application, used for detecting locks
-      #   that were abandoned by a previous instance of the same application, but haven't gone stale yet.
-      #
-      #   Default is a unique UUID, meaning that it won't take over abandoned locks.
+      # @param instance_identity [String] A unique identifier for this application instance, to be included in the
+      #   lock object's owner identity string. Learn more in the readme, section "Fast recovery from stale locks".
+      # @param thread_safe [Boolean] Whether this Lock instance should be thread-safe. When true, the thread's
+      #   identity will be included in the lock object's owner identity string, section "Thread-safety".
       # @param logger A Logger-compatible object to log progress to. See also the note about thread-safety.
       # @param ttl [Integer, Float] The lock is considered stale if it's age (in seconds) is older than this value.
       #   This value should be generous, on the order of minutes.
       # @param refresh_interval [Integer, Float, nil]
-      #   We'll refresh the lock's
-      #   timestamp every `refresh_interval` seconds. This value should be many
-      #   times smaller than `stale_time`, so that we can detect an unhealthy
-      #   lock long before it becomes stale.
+      #   We'll refresh the lock's timestamp every `refresh_interval` seconds. This value should be many
+      #   times smaller than `stale_time`, so that we can detect an unhealthy lock long before it becomes stale.
       #
       #   This value must be smaller than `ttl / MAX_REFRESH_FAILS`.
       #
@@ -62,7 +62,8 @@ module DistributedLock
       #   besides this `Lock` instance. This is because the logger will be
       #   written to by a background thread.
       # @raise [ArgumentError] When an invalid argument is detected.
-      def initialize(bucket_name:, path:, app_identity: SecureRandom.hex(12), logger: Logger.new($stderr),
+      def initialize(bucket_name:, path:, instance_identity: DEFAULT_INSTANCE_IDENTITY,
+        thread_safe: true, logger: Logger.new($stderr),
         ttl: DEFAULT_TTL, refresh_interval: nil, max_refresh_fails: DEFAULT_MAX_REFRESH_FAILS,
         backoff_min: DEFAULT_BACKOFF_MIN, backoff_max: DEFAULT_BACKOFF_MAX,
         backoff_multiplier: DEFAULT_BACKOFF_MULTIPLIER,
@@ -75,7 +76,8 @@ module DistributedLock
 
         @bucket_name = bucket_name
         @path = path
-        @app_identity = app_identity
+        @instance_identity = instance_identity
+        @thread_safe = thread_safe
         @logger = logger
         @ttl = ttl
         @refresh_interval = refresh_interval || ttl * DEFAULT_TTL_REFRESH_INTERVAL_DIVIDER
@@ -277,7 +279,9 @@ module DistributedLock
 
       # @return [String]
       def identity
-        "#{@app_identity}/thr-#{Thread.current.object_id.to_s(36)}"
+        result = @instance_identity
+        result = "#{result}/thr-#{Thread.current.object_id.to_s(36)}" if @thread_safe
+        result
       end
 
       # Creates the lock object in Cloud Storage. Returns a Google::Cloud::Storage::File

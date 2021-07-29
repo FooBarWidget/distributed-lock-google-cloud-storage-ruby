@@ -14,7 +14,6 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     DistributedLock::GoogleCloudStorage::Lock.new(
       bucket_name: require_envvar('TEST_GCLOUD_BUCKET'),
       path: 'ruby-lock',
-      app_identity: 'rspec',
       cloud_storage_options: {
         credentials: require_envvar('TEST_GCLOUD_CREDENTIALS_PATH'),
       },
@@ -63,11 +62,11 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     before(:each) do
       force_erase_lock_object
       @lock = create(logger: Logger.new(StringIO.new))
-      @lock_app2 = create(app_identity: 'rspec2', logger: Logger.new(StringIO.new))
+      @lock2 = create(logger: Logger.new(StringIO.new))
     end
 
     after :each do
-      [@lock, @lock_app2].each do |lock|
+      [@lock, @lock2].each do |lock|
         lock.abandon if lock
       end
     end
@@ -100,9 +99,9 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_owned_according_to_server
     end
 
-    specify 'another app identity fails to take the lock' do
+    specify 'another instance fails to take the lock' do
       expect(@lock.try_lock).to be_truthy
-      expect(@lock_app2.try_lock).to be_falsey
+      expect(@lock2.try_lock).to be_falsey
       expect(@lock).to be_locked_according_to_internal_state
       expect(@lock).to be_locked_according_to_server
       expect(@lock).to be_owned_according_to_internal_state
@@ -119,13 +118,10 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     before(:each) do
       force_erase_lock_object
       @lock = create(logger: Logger.new(StringIO.new))
-      @lock_app2 = create(app_identity: 'rspec2', logger: Logger.new(StringIO.new))
     end
 
     after :each do
-      [@lock, @lock_app2].each do |lock|
-        lock.abandon if lock
-      end
+      @lock.abandon if @lock
     end
 
     it 'works' do
