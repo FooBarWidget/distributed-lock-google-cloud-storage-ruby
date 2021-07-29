@@ -6,6 +6,10 @@ require_relative 'spec_helper'
 require_relative '../lib/distributed-lock-google-cloud-storage/lock'
 
 RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
+  around(:each) do |ex|
+    ex.run_with_retry retry: 3
+  end
+
   def create(**options)
     DistributedLock::GoogleCloudStorage::Lock.new(
       bucket_name: require_envvar('TEST_GCLOUD_BUCKET'),
@@ -105,6 +109,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_owned_according_to_server
     end
 
+    it 'retries if the lock object was deleted right after failing to create it'
     it 'succeeds if the lock was previously abandoned by the same instance and thread'
     it 'cleans up stale locks'
   end
@@ -152,6 +157,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_owned_according_to_server
     end
 
+    it 'retries if the lock object was deleted right after failing to create it'
     it 'succeeds if the lock was previously abandoned by the same instance and thread'
     it 'cleans up stale locks'
   end
@@ -161,15 +167,19 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     before(:each) do
       force_erase_lock_object
       @lock = create(logger: Logger.new(StringIO.new))
-      expect(@lock.try_lock).to be_truthy
-      expect { @lock.unlock }.not_to raise_error
     end
 
     after :each do
       @lock.abandon if @lock
     end
 
+    def lock_and_unlock
+      expect(@lock.try_lock).to be_truthy
+      expect { @lock.unlock }.not_to raise_error
+    end
+
     it 'releases the lock' do
+      lock_and_unlock
       expect(@lock).not_to be_locked_according_to_internal_state
       expect(@lock).not_to be_locked_according_to_server
       expect(@lock).not_to be_owned_according_to_internal_state
@@ -177,6 +187,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     end
 
     specify 'checking for health is not possible due to being unlocked' do
+      lock_and_unlock
       expect { @lock.healthy? }.to \
         raise_error(DistributedLock::GoogleCloudStorage::NotLockedError)
       expect { @lock.check_health! }.to \
@@ -184,11 +195,27 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     end
 
     specify 'unlocking again is not possible' do
+      lock_and_unlock
       expect { @lock.unlock }.to \
         raise_error(DistributedLock::GoogleCloudStorage::NotLockedError)
+    end
+
+    it 'works if the lock object is already deleted' do
+      expect(@lock.try_lock).to be_truthy
+      force_erase_lock_object
+      expect { @lock.unlock }.not_to raise_error
+      expect(@lock).not_to be_locked_according_to_internal_state
+      expect(@lock).not_to be_locked_according_to_server
+      expect(@lock).not_to be_owned_according_to_internal_state
+      expect(@lock).not_to be_owned_according_to_server
     end
   end
 
 
-  describe 'refreshing'
+  describe 'refreshing' do
+    it 'updates the update time'
+    it 'declares unhealthiness upon failing too many times in succession'
+    it 'declares unhealthiness when the metageneration number is inconsistent'
+    it 'declares unhealthiness when the lock object is deleted'
+  end
 end

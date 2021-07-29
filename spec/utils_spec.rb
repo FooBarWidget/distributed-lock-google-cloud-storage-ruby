@@ -99,4 +99,10 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Utils do
       end
     end
   end
+
+
+  describe '.work_regularly' do
+    # it 'does not declare unhealthiness upon initial failures'
+    # it 'resets'
+  end
 end

@@ -2,6 +2,7 @@
 
 require 'logger'
 require 'stringio'
+require 'securerandom'
 require 'google/cloud/storage'
 require_relative 'constants'
 require_relative 'errors'
@@ -22,9 +23,14 @@ module DistributedLock
       # @param bucket_name [String] The name of a Cloud Storage bucket in which to place the lock.
       #   This bucket must already exist.
       # @param path [String] The object path within the bucket to use for locking.
+      # @param app_identity [String] A unique identity for this application, used for detecting locks
+      #   that were abandoned by a previous instance of the same application, but haven't gone stale yet.
+      #
+      #   Default is a unique UUID, meaning that it won't take over abandoned locks.
+      # @param logger A Logger-compatible object to log progress to. See also the note about thread-safety.
       # @param ttl [Integer, Float] The lock is considered stale if it's age (in seconds) is older than this value.
       #   This value should be generous, on the order of minutes.
-      # @param refresh_interval [Integer, Float]
+      # @param refresh_interval [Integer, Float, nil]
       #   We'll refresh the lock's
       #   timestamp every `refresh_interval` seconds. This value should be many
       #   times smaller than `stale_time`, so that we can detect an unhealthy
@@ -33,7 +39,8 @@ module DistributedLock
       #   This value must be smaller than `ttl / MAX_REFRESH_FAILS`.
       #
       #   Default: `stale_time / 8`
-      # @param logger A Logger-compatible object to log progress to. See also the note about thread-safety.
+      # @param max_refresh_fails [Integer]
+      #   The lock will be declared unhealthy if refreshing fails this many times consecutively.
       # @param backoff_min [Integer, Float] Minimum amount of time, in seconds, to back off when
       #   waiting for a lock to become available. Must be at least 0.
       # @param backoff_max [Integer, Float] Maximum amount of time, in seconds, to back off when
@@ -55,8 +62,8 @@ module DistributedLock
       #   besides this `Lock` instance. This is because the logger will be
       #   written to by a background thread.
       # @raise [ArgumentError] When an invalid argument is detected.
-      def initialize(bucket_name:, path:, app_identity:, logger: Logger.new($stderr),
-        ttl: DEFAULT_TTL, refresh_interval: nil,
+      def initialize(bucket_name:, path:, app_identity: SecureRandom.hex(12), logger: Logger.new($stderr),
+        ttl: DEFAULT_TTL, refresh_interval: nil, max_refresh_fails: DEFAULT_MAX_REFRESH_FAILS,
         backoff_min: DEFAULT_BACKOFF_MIN, backoff_max: DEFAULT_BACKOFF_MAX,
         backoff_multiplier: DEFAULT_BACKOFF_MULTIPLIER,
         object_acl: nil, cloud_storage_options: nil, cloud_storage_bucket_options: nil)
@@ -72,6 +79,7 @@ module DistributedLock
         @logger = logger
         @ttl = ttl
         @refresh_interval = refresh_interval || ttl * DEFAULT_TTL_REFRESH_INTERVAL_DIVIDER
+        @max_refresh_fails = max_refresh_fails
         @backoff_min = backoff_min
         @backoff_max = backoff_max
         @backoff_multiplier = backoff_multiplier
@@ -294,8 +302,8 @@ module DistributedLock
       def delete_lock_object(expected_metageneration)
         file = @bucket.file(@path, skip_lookup: true)
         file.delete(if_metageneration_match: expected_metageneration)
-      #rescue Google::Cloud::NotFoundError
-      #  false
+      rescue Google::Cloud::NotFoundError
+        false
       rescue Google::Cloud::FailedPreconditionError
         false
       end
@@ -325,36 +333,22 @@ module DistributedLock
       end
 
       def refresher_thread_main
-        fail_count = 0
-        next_refresh_time = monotonic_time + @refresh_interval
+        params = {
+          mutex: @refresher_mutex,
+          cond: @refresher_cond,
+          interval: @refresh_interval,
+          max_failures: @max_refresh_fails,
+          check_quit: lambda { @refresher_quit },
+          schedule_calculated: lambda { |timeout| @logger.debug "Next lock refresh in #{timeout}s" }
+        }
 
-        @refresher_mutex.synchronize do
-          while !@refresher_quit && fail_count <= MAX_REFRESH_FAILS
-            timeout = [0, next_refresh_time - monotonic_time].max
-            @logger.debug "Next lock refresh in #{timeout}s"
-            @refresher_cond.wait(@refresher_mutex, timeout)
-            break if @refresher_quit
+        result = work_regularly(**params) do
+          refresh_lock
+        end
 
-            # Timed out; refresh now
-            next_refresh_time = monotonic_time + @refresh_interval
-            @refresher_mutex.unlock
-            begin
-              refreshed = refresh_lock
-            ensure
-              @refresher_mutex.lock
-            end
-
-            if refreshed
-              fail_count = 0
-            else
-              fail_count += 1
-            end
-          end
-
-          if fail_count > MAX_REFRESH_FAILS
-            @logger.error("Lock refresh failed #{fail_count} times in succession." \
-              ' Declaring lock as unhealthy')
-          end
+        if !result
+          @logger.error("Lock refresh failed #{@max_refresh_fails} times in succession." \
+            ' Declaring lock as unhealthy')
         end
       end
 
