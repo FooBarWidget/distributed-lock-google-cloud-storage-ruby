@@ -2,3 +2,5 @@
 .bundle
 .yardoc
 .byebug_history
+.env
+local

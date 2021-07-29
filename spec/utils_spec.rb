@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require_relative '../lib/distributed-lock-google-cloud-storage/constants'
 require_relative '../lib/distributed-lock-google-cloud-storage/errors'
 require_relative '../lib/distributed-lock-google-cloud-storage/utils'

@@ -5,11 +5,10 @@ source 'https://rubygems.org'
 #gemspec!
 
 gem 'google-cloud-storage'
+
 gem 'byebug'
-gem 'redcarpet'
 gem 'rubocop'
 gem 'sord'
-
-group :development, :test do
-  gem 'rspec'
-end
+gem 'redcarpet'
+gem 'rspec'
+gem 'dotenv'

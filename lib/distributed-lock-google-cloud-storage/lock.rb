@@ -55,8 +55,8 @@ module DistributedLock
       #   besides this `Lock` instance. This is because the logger will be
       #   written to by a background thread.
       # @raise [ArgumentError] When an invalid argument is detected.
-      # @raise [BucketNotFoundError] When the bucket specified by `bucket_name` is not found.
-      def initialize(bucket_name:, path:, ttl: DEFAULT_TTL, refresh_interval: nil, logger: Logger.new($stderr),
+      def initialize(bucket_name:, path:, app_identity:, logger: Logger.new($stderr),
+        ttl: DEFAULT_TTL, refresh_interval: nil,
         backoff_min: DEFAULT_BACKOFF_MIN, backoff_max: DEFAULT_BACKOFF_MAX,
         backoff_multiplier: DEFAULT_BACKOFF_MULTIPLIER,
         object_acl: nil, cloud_storage_options: nil, cloud_storage_bucket_options: nil)
@@ -68,9 +68,10 @@ module DistributedLock
 
         @bucket_name = bucket_name
         @path = path
+        @app_identity = app_identity
+        @logger = logger
         @ttl = ttl
         @refresh_interval = refresh_interval || ttl * DEFAULT_TTL_REFRESH_INTERVAL_DIVIDER
-        @logger = logger
         @backoff_min = backoff_min
         @backoff_max = backoff_max
         @backoff_multiplier = backoff_multiplier
@@ -82,19 +83,37 @@ module DistributedLock
         @refresher_cond = ConditionVariable.new
       end
 
-      def locked?
-        !@refresher_thread.nil?
+      # Returns whether this Lock instance's internal state believes that the lock
+      # is currently held by this instance. Does not check whether the lock is stale.
+      def locked_according_to_internal_state?
+        !@owner.nil?
       end
 
-      def owned?
+      # Returns whether the server believes that the lock is currently held by somebody.
+      # Does not check whether the lock is stale.
+      def locked_according_to_server?
+        !@bucket.file(@path).nil?
+      end
+
+      # Returns whether this Lock instance's internal state believes that the lock
+      # is held by the current Lock instance in the calling thread.
+      def owned_according_to_internal_state?
+        @owner == identity
+      end
+
+      # Returns whether the server believes that the lock is held by the current
+      # Lock instance in the calling thread.
+      def owned_according_to_server?
         file = @bucket.file(@path)
-        file.metadata['identity'] == @id
-      rescue Google::Cloud::NotFoundError
-        false
+        return false if file.nil?
+        file.metadata['identity'] == identity
       end
 
       def try_lock
+        raise AlreadyLockedError, 'Already locked' if owned_according_to_internal_state?
+
         if (file = create_lock_object)
+          @owner = identity
           @metageneration = file.metageneration
           spawn_refresher_thread
           true
@@ -103,12 +122,17 @@ module DistributedLock
         end
       end
 
-      # Acquires the lock. If the lock is stale, resets it automatically. If the lock is already
-      # acquired, blocks until it becomes available, or until timeout.
+      # Obtains the lock. If the lock is stale, resets it automatically. If the lock is already
+      # obtained by some other app identity or some other thread, waits until it becomes available,
+      # or until timeout.
       #
       # @param timeout [Integer, Float] The timeout in seconds.
+      # @raise [AlreadyLockedError] This Lock instance — according to its internal state — believes
+      #   that it's already holding the lock.
       # @raise [TimeoutError] Failed to acquire the lock within `timeout` seconds.
       def lock(timeout: 2 * @ttl)
+        raise AlreadyLockedError, 'Already locked' if owned_according_to_internal_state?
+
         file = retry_with_backoff_until_success(timeout,
           retry_logger: method(:log_lock_retry),
           backoff_min: @backoff_min,
@@ -117,30 +141,50 @@ module DistributedLock
 
           if (file = create_lock_object)
             [:success, file]
-          elsif file.metadata['identity'] == @id
-            @logger.warn 'Lock was already owned by this instance, but was abandoned. Resetting lock'
-            delete_lock_object(resp.metageneration)
-            :retry_immediately
           else
-            if lock_stale?(file)
-              @logger.warn 'Lock is stale. Resetting lock'
+            file = @bucket.file(@path)
+            if file.nil?
+              :retry_immediately
+            elsif file.metadata['identity'] == identity
+              @logger.warn 'Lock was already owned by this instance, but was abandoned. Resetting lock'
               delete_lock_object(resp.metageneration)
+              :retry_immediately
+            else
+              if lock_stale?(file)
+                @logger.warn 'Lock is stale. Resetting lock'
+                delete_lock_object(resp.metageneration)
+              end
+              :error
             end
-            :error
           end
         end
 
+        @owner = identity
         @metageneration = file.metageneration
         spawn_refresher_thread
         nil
       end
 
+      # Releases the lock and stops refreshing the lock in the background.
+      #
+      # @raises [NotLockedError] This Lock instance — according to its internal state — believes
+      #   that it isn't currently holding the lock.
       def unlock
-        raise NotLockedError, 'Not locked' if !locked?
+        raise NotLockedError, 'Not locked' if !locked_according_to_internal_state?
         shutdown_refresher_thread
         delete_lock_object(@metageneration)
+        @owner = nil
       end
 
+      # Obtains the lock, runs the block, and releases the lock when the block completes.
+      #
+      # If the lock is stale, resets it automatically. If the lock is already
+      # obtained by some other app identity or some other thread, waits until it becomes available,
+      # or until timeout.
+      #
+      # Accepts the same arguments as #lock.
+      #
+      # @return The block's return value.
       def synchronize(...)
         lock(...)
         begin
@@ -150,11 +194,33 @@ module DistributedLock
         end
       end
 
+      # Pretends like we've never obtained this lock, abandoning our internal state about the lock.
+      #
+      # Shuts down background lock refreshing, and ensures that
+      # #locked_according_to_internal_state? returns false.
+      #
+      # Does not modify any server data, so #locked_according_to_server? may still return true.
+      def abandon
+        shutdown_refresher_thread if locked_according_to_internal_state?
+      end
+
+      # Returns whether the lock is healthy. A lock is considered healthy until
+      # we fail to refresh the lock too many times consecutively.
+      #
+      # It only makes sense to call this method after having obtained this lock.
+      #
+      # @raises [NotLockedError] This lock was not obtained.
       def healthy?
-        raise NotLockedError, 'Not locked' if !locked?
+        raise NotLockedError, 'Not locked' if !locked_according_to_internal_state?
         @refresher_thread.alive?
       end
 
+      # Checks whether the lock is healthy. See #healthy? for the definition of "healthy".
+      #
+      # It only makes sense to call this method after having obtained this lock.
+      #
+      # @raises [LockUnhealthyError] When an unhealthy state is detected.
+      # @raises [NotLockedError] This lock was not obtained.
       def check_health!
         raise LockUnhealthyError, 'Lock is not healthy' if !healthy?
       end
@@ -228,16 +294,15 @@ module DistributedLock
       def delete_lock_object(expected_metageneration)
         file = @bucket.file(@path, skip_lookup: true)
         file.delete(if_metageneration_match: expected_metageneration)
-        true
-      rescue Google::Cloud::NotFoundError
-        true
+      #rescue Google::Cloud::NotFoundError
+      #  false
       rescue Google::Cloud::FailedPreconditionError
         false
       end
 
       # @param file [Google::Cloud::Storage::File]
       def lock_stale?(file)
-        Time.now.to_f < file.updated_at.to_time + file.metadata['ttl'].to_f
+        Time.now.to_f < file.updated_at.to_time.to_f + file.metadata['ttl'].to_f
       end
 
       def log_lock_retry(sleep_time)
