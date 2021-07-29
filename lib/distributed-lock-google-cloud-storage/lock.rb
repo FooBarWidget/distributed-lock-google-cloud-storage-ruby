@@ -175,13 +175,17 @@ module DistributedLock
 
       # Releases the lock and stops refreshing the lock in the background.
       #
+      # @return [Boolean] True if the lock object was actually deleted, false if the lock object
+      #   was already deleted.
       # @raises [NotLockedError] This Lock instance — according to its internal state — believes
       #   that it isn't currently holding the lock.
       def unlock
         raise NotLockedError, 'Not locked' if !locked_according_to_internal_state?
         shutdown_refresher_thread
-        delete_lock_object(@metageneration)
+        deleted = delete_lock_object(@metageneration)
         @owner = nil
+        @metageneration = nil
+        deleted
       end
 
       # Obtains the lock, runs the block, and releases the lock when the block completes.

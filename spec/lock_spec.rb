@@ -175,11 +175,13 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
 
     def lock_and_unlock
       expect(@lock.try_lock).to be_truthy
-      expect { @lock.unlock }.not_to raise_error
+      deleted = nil
+      expect { deleted = @lock.unlock }.not_to raise_error
+      deleted
     end
 
     it 'releases the lock' do
-      lock_and_unlock
+      expect(lock_and_unlock).to be_truthy
       expect(@lock).not_to be_locked_according_to_internal_state
       expect(@lock).not_to be_locked_according_to_server
       expect(@lock).not_to be_owned_according_to_internal_state
@@ -203,7 +205,9 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     it 'works if the lock object is already deleted' do
       expect(@lock.try_lock).to be_truthy
       force_erase_lock_object
-      expect { @lock.unlock }.not_to raise_error
+      deleted = nil
+      expect { deleted = @lock.unlock }.not_to raise_error
+      expect(deleted).to be_falsey
       expect(@lock).not_to be_locked_according_to_internal_state
       expect(@lock).not_to be_locked_according_to_server
       expect(@lock).not_to be_owned_according_to_internal_state
