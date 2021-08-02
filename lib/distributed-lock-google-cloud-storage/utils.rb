@@ -5,12 +5,36 @@ module DistributedLock
     module Utils
       private
 
+      # Queries the monotonic clock and returns its timestamp, in seconds.
+      #
       # @return [Float]
       def monotonic_time
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
 
 
+      # Runs the given block until it succeeds, or until we timeout.
+      #
+      # The block must return `:success`, `[:success, any value]`, `:error` or
+      # `:retry_immediately`.
+      #
+      # Every time the block returns `:error`, we sleep for an amount of time and
+      # then we try again. This sleep time increases exponentially but is subject
+      # to random jitter.
+      #
+      # If the block returns `:retry_immediately` then we retry immediately without
+      # sleeping.
+      #
+      # If the block returns `[:success, any value]` then this function returns `any value`.
+      # If the block returns just `:success` then this function returns nil.
+      #
+      # @param [Numeric] timeout
+      # @param [#call] retry_logger Will be called every time we retry. The parameter
+      #   passed is a Float, indicating the seconds that we'll sleep until the next retry.
+      # @param backoff_min [Numeric]
+      # @param backoff_max [Numeric]
+      # @param backoff_multiplier [Numeric]
+      # @yield
       def retry_with_backoff_until_success(timeout,
         retry_logger: nil,
         backoff_min: DEFAULT_BACKOFF_MIN,
@@ -49,14 +73,35 @@ module DistributedLock
       end
 
 
-      def work_regularly(mutex:, cond:, interval:, max_failures:, check_quit:, schedule_calculated:)
+      # Once every `interval` seconds, yields the given block, until `check_quit` returns true
+      # or until the block failed `max_failures` times in succession.
+      #
+      # Sleeping between yields works by sleeping on the given condition variable. You can thus
+      # force this function to wake up (e.g. to tell it that it should quit) by signalling the
+      # condition variable.
+      #
+      # We take the lock while the block is being yielded. We release the lock while we're
+      # sleeping.
+      #
+      # @param [Mutex] mutex
+      # @param [ConditionVariable] cond
+      # @param [Numeric] interval
+      # @param [Integer] max_failures
+      # @param [#call] check_quit Will be called regularly to check whether we should stop.
+      #   This callable must return a Boolean.
+      # @param [#call, nil] schedule_calculated
+      # @yield
+      # @yieldreturn [Boolean] True to indicate success, false to indicate failure.
+      # @return [Boolean] True if this function stopped because `check_quit` returned true, false
+      #   if this function stopped because the block failed `max_failures` times in succession.
+      def work_regularly(mutex:, cond:, interval:, max_failures:, check_quit:, schedule_calculated: nil)
         fail_count = 0
         next_time = monotonic_time + interval
 
         mutex.synchronize do
-          while !check_quit.call && fail_count <= max_failures
+          while !check_quit.call && fail_count < max_failures
             timeout = [0, next_time - monotonic_time].max
-            schedule_calculated.call(timeout)
+            schedule_calculated.call(timeout) if schedule_calculated
             wait_on_condition_variable(mutex, cond, timeout)
             break if check_quit.call
 
@@ -77,7 +122,7 @@ module DistributedLock
           end
         end
 
-        fail_count > max_failures
+        fail_count < max_failures
       end
 
       def wait_on_condition_variable(mutex, cond, timeout)

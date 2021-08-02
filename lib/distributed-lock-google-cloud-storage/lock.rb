@@ -119,19 +119,6 @@ module DistributedLock
         file.metadata['identity'] == identity
       end
 
-      def try_lock
-        raise AlreadyLockedError, 'Already locked' if owned_according_to_internal_state?
-
-        if (file = create_lock_object)
-          @owner = identity
-          @metageneration = file.metageneration
-          spawn_refresher_thread
-          true
-        else
-          false
-        end
-      end
-
       # Obtains the lock. If the lock is stale, resets it automatically. If the lock is already
       # obtained by some other app identity or some other thread, waits until it becomes available,
       # or until timeout.
@@ -154,15 +141,16 @@ module DistributedLock
           else
             file = @bucket.file(@path)
             if file.nil?
+              @logger.warn 'Lock was deleted right after having created it. Retrying.'
               :retry_immediately
             elsif file.metadata['identity'] == identity
               @logger.warn 'Lock was already owned by this instance, but was abandoned. Resetting lock'
-              delete_lock_object(resp.metageneration)
+              delete_lock_object(file.metageneration)
               :retry_immediately
             else
               if lock_stale?(file)
                 @logger.warn 'Lock is stale. Resetting lock'
-                delete_lock_object(resp.metageneration)
+                delete_lock_object(file.metageneration)
               end
               :error
             end
@@ -318,7 +306,7 @@ module DistributedLock
 
       # @param file [Google::Cloud::Storage::File]
       def lock_stale?(file)
-        Time.now.to_f < file.updated_at.to_time.to_f + file.metadata['ttl'].to_f
+        Time.now.to_f > file.metadata['expires_at'].to_f
       end
 
       def log_lock_retry(sleep_time)
@@ -366,10 +354,7 @@ module DistributedLock
           file = @bucket.file(@path, skip_lookup: true)
           begin
             file.update(if_metageneration_match: @metageneration) do |f|
-              # Change some metadata (doesn't matter what) in order to change
-              # the metadata timestamp.
-              num = (f.metadata['ping'] || 0).to_i
-              f.metadata['ping'] = num + 1
+              f.metadata['expires_at'] = (Time.now + @ttl).to_f
             end
           rescue Google::Cloud::FailedPreconditionError
             raise 'Lock object has an unexpected metageneration number'

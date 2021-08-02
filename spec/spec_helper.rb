@@ -8,6 +8,28 @@ module Helpers
     raise ArgumentError, "Required environment variable: #{name}" if value.to_s.empty?
     value
   end
+
+  def monotonic_time
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
+  def eventually(timeout:, interval: 0.1)
+    deadline = monotonic_time + timeout
+    while monotonic_time < deadline
+      result = yield
+      return if result
+      sleep interval
+    end
+    raise 'Timeout'
+  end
+
+  def consistently(duration:, interval: 0.1)
+    deadline = monotonic_time + duration
+    while monotonic_time < deadline
+      yield
+      sleep interval
+    end
+  end
 end
 
 

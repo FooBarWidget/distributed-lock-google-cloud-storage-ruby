@@ -102,7 +102,79 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Utils do
 
 
   describe '.work_regularly' do
-    # it 'does not declare unhealthiness upon initial failures'
-    # it 'resets'
+    class UtilsHolder
+      include DistributedLock::GoogleCloudStorage::Utils
+      public :work_regularly
+    end
+
+    let(:utils) { UtilsHolder.new }
+
+    before :each do
+      @mutex = Mutex.new
+      @cond = ConditionVariable.new
+    end
+
+    def check_quit
+      @quit
+    end
+
+    it 'yields the block until we signal it to quit' do
+      called = 0
+
+      expect(utils).to \
+        receive(:wait_on_condition_variable).
+        with(@mutex, @cond, kind_of(Numeric)).
+        exactly(2).times
+
+      result = utils.work_regularly(mutex: @mutex, cond: @cond,
+        interval: 1, max_failures: 3, check_quit: method(:check_quit)) do
+
+        called += 1
+        @quit = called >= 2
+        true
+      end
+
+      expect(called).to eq(2)
+      expect(result).to be_truthy
+    end
+
+    it 'yields the block until it fails too many time in succession' do
+      called = 0
+
+      expect(utils).to \
+        receive(:wait_on_condition_variable).
+        with(@mutex, @cond, kind_of(Numeric)).
+        exactly(3).times
+
+      result = utils.work_regularly(mutex: @mutex, cond: @cond,
+        interval: 1, max_failures: 3, check_quit: method(:check_quit)) do
+
+        called += 1
+        false
+      end
+
+      expect(called).to eq(3)
+      expect(result).to be_falsey
+    end
+
+    it 'resets the failure counter when the block succeeds' do
+      called = 0
+
+      expect(utils).to \
+        receive(:wait_on_condition_variable).
+        with(@mutex, @cond, kind_of(Numeric)).
+        exactly(10).times
+
+      result = utils.work_regularly(mutex: @mutex, cond: @cond,
+        interval: 1, max_failures: 3, check_quit: method(:check_quit)) do
+
+        called += 1
+        @quit = called >= 10
+        called % 2 == 0
+      end
+
+      expect(called).to eq(10)
+      expect(result).to be_truthy
+    end
   end
 end

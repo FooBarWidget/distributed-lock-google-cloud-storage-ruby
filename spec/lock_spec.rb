@@ -6,6 +6,9 @@ require_relative 'spec_helper'
 require_relative '../lib/distributed-lock-google-cloud-storage/lock'
 
 RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
+  DEFAULT_TIMEOUT = 15
+  LOCK_PATH = 'ruby-lock'
+
   around(:each) do |ex|
     ex.run_with_retry retry: 3
   end
@@ -13,20 +16,30 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
   def create(**options)
     DistributedLock::GoogleCloudStorage::Lock.new(
       bucket_name: require_envvar('TEST_GCLOUD_BUCKET'),
-      path: 'ruby-lock',
+      path: LOCK_PATH,
+      logger: Logger.new(log_output),
       cloud_storage_options: {
         credentials: require_envvar('TEST_GCLOUD_CREDENTIALS_PATH'),
       },
       **options)
   end
 
+  def force_recreate_lock_object(**options)
+    storage = Google::Cloud::Storage.new(credentials: require_envvar('TEST_GCLOUD_CREDENTIALS_PATH'))
+    bucket = storage.bucket(require_envvar('TEST_GCLOUD_BUCKET'), skip_lookup: true)
+    bucket.create_file(StringIO.new, LOCK_PATH, cache_control: 'no-store', **options)
+  end
+
   def force_erase_lock_object
     storage = Google::Cloud::Storage.new(credentials: require_envvar('TEST_GCLOUD_CREDENTIALS_PATH'))
     bucket = storage.bucket(require_envvar('TEST_GCLOUD_BUCKET'), skip_lookup: true)
-    bucket.file('ruby-lock', skip_lookup: true).delete
+    bucket.file(LOCK_PATH, skip_lookup: true).delete
   rescue Google::Cloud::NotFoundError
     # Do nothing
   end
+
+
+  let(:log_output) { StringIO.new }
 
 
   describe 'initial state' do
@@ -58,88 +71,74 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
   end
 
 
-  describe '#try_lock' do
-    before(:each) do
-      force_erase_lock_object
-      @lock = create(logger: Logger.new(StringIO.new))
-      @lock2 = create(logger: Logger.new(StringIO.new))
-    end
-
+  describe '#lock' do
     after :each do
+      @thread.kill if @thread
       [@lock, @lock2].each do |lock|
         lock.abandon if lock
       end
     end
 
     it 'works' do
-      expect(@lock.try_lock).to be_truthy
-      expect(@lock).to be_locked_according_to_internal_state
-      expect(@lock).to be_locked_according_to_server
-      expect(@lock).to be_owned_according_to_internal_state
-      expect(@lock).to be_owned_according_to_server
-      expect(@lock).to be_healthy
-      expect { @lock.check_health! }.not_to raise_error
-    end
-
-    it 'raises AlreadyLockedError if called twice by the same instance and thread' do
-      expect(@lock.try_lock).to be_truthy
-      expect { @lock.try_lock }.to \
-        raise_error(DistributedLock::GoogleCloudStorage::AlreadyLockedError)
-    end
-
-    specify 'another thread fails to take the lock' do
-      expect(@lock.try_lock).to be_truthy
-
-      thr = Thread.new { Thread.current[:result] = @lock.try_lock }
-      expect(thr.join[:result]).to be_falsey
-
-      expect(@lock).to be_locked_according_to_internal_state
-      expect(@lock).to be_locked_according_to_server
-      expect(@lock).to be_owned_according_to_internal_state
-      expect(@lock).to be_owned_according_to_server
-    end
-
-    specify 'another instance fails to take the lock' do
-      expect(@lock.try_lock).to be_truthy
-      expect(@lock2.try_lock).to be_falsey
-      expect(@lock).to be_locked_according_to_internal_state
-      expect(@lock).to be_locked_according_to_server
-      expect(@lock).to be_owned_according_to_internal_state
-      expect(@lock).to be_owned_according_to_server
-    end
-
-    it 'retries if the lock object was deleted right after failing to create it'
-    it 'succeeds if the lock was previously abandoned by the same instance and thread'
-    it 'cleans up stale locks'
-  end
-
-
-  describe '#lock' do
-    before(:each) do
       force_erase_lock_object
-      @lock = create(logger: Logger.new(StringIO.new))
-    end
+      @lock = create
 
-    after :each do
-      @lock.abandon if @lock
-    end
-
-    it 'works' do
-      @lock.lock
+      @lock.lock(timeout: DEFAULT_TIMEOUT)
       expect(@lock).to be_locked_according_to_internal_state
       expect(@lock).to be_locked_according_to_server
       expect(@lock).to be_owned_according_to_internal_state
       expect(@lock).to be_owned_according_to_server
     end
 
-    it 'raises AlreadyLockedError if called twice by the same instance and thread' do
+    it 'waits until the lock object is no longer taken' do
+      force_erase_lock_object
+      @lock = create
       @lock.lock
+
+      @lock2 = create(backoff_min: 0.01, backoff_max: 0.05)
+      @thread = Thread.new do
+        @lock2.lock
+        Thread.current[:result] = {
+          locked_according_to_internal_state: @lock2.locked_according_to_internal_state?,
+          locked_according_to_server: @lock2.locked_according_to_server?,
+          owned_according_to_internal_state: @lock2.owned_according_to_internal_state?,
+          owned_according_to_server: @lock2.owned_according_to_server?,
+        }
+      end
+
+      consistently(duration: 1, interval: 0.05) do
+        expect(@thread).to be_alive
+      end
+
+      @lock.unlock
+      eventually(timeout: 1, interval: 0.05) do
+        !@thread.alive?
+      end
+
+      @thread.join
+      result = @thread[:result]
+      @thread = nil
+
+      expect(result[:locked_according_to_internal_state]).to be_truthy
+      expect(result[:locked_according_to_server]).to be_truthy
+      expect(result[:owned_according_to_internal_state]).to be_truthy
+      expect(result[:owned_according_to_server]).to be_truthy
+    end
+
+    it 'raises AlreadyLockedError if called twice by the same instance and thread' do
+      force_erase_lock_object
+      @lock = create
+
+      @lock.lock(timeout: DEFAULT_TIMEOUT)
       expect { @lock.lock }.to \
         raise_error(DistributedLock::GoogleCloudStorage::AlreadyLockedError)
     end
 
     specify 'another thread fails to take the lock' do
-      @lock.lock
+      force_erase_lock_object
+      @lock = create
+
+      @lock.lock(timeout: DEFAULT_TIMEOUT)
 
       thr = Thread.new do
         Thread.current.report_on_exception = false
@@ -153,16 +152,61 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_owned_according_to_server
     end
 
-    it 'retries if the lock object was deleted right after failing to create it'
-    it 'succeeds if the lock was previously abandoned by the same instance and thread'
-    it 'cleans up stale locks'
+    it 'retries if the lock object was deleted right after failing to create it' do
+      @lock = create
+      force_recreate_lock_object
+      called = 0
+
+      expect(@lock).to \
+        receive(:create_lock_object).
+        at_least(:once).
+        and_wrap_original do |orig_method, *args|
+          called += 1
+          result = orig_method.call(*args)
+          force_erase_lock_object if called == 1
+          result
+        end
+
+      @lock.lock(timeout: DEFAULT_TIMEOUT)
+      expect(log_output.string.scan('Lock was deleted right after having created it').size).to eq(1)
+      expect(called).to eq(2)
+      expect(@lock).to be_locked_according_to_internal_state
+      expect(@lock).to be_locked_according_to_server
+      expect(@lock).to be_owned_according_to_internal_state
+      expect(@lock).to be_owned_according_to_server
+    end
+
+    it 'succeeds if the lock was previously abandoned by the same instance and thread' do
+      @lock = create(instance_identity: 'foo', thread_safe: false)
+      force_recreate_lock_object(metadata: { identity: 'foo' })
+
+      expect(@lock).to receive(:create_lock_object).exactly(2).times.and_call_original
+      @lock.lock(timeout: DEFAULT_TIMEOUT)
+      expect(log_output.string.scan('Lock was already owned').size).to eq(1)
+      expect(@lock).to be_locked_according_to_internal_state
+      expect(@lock).to be_locked_according_to_server
+      expect(@lock).to be_owned_according_to_internal_state
+      expect(@lock).to be_owned_according_to_server
+    end
+
+    it 'cleans up stale locks' do
+      @lock = create
+      force_recreate_lock_object(metadata: { expires_at: 0 })
+
+      @lock.lock(timeout: DEFAULT_TIMEOUT)
+      expect(log_output.string.scan('Lock is stale').size).to eq(1)
+      expect(@lock).to be_locked_according_to_internal_state
+      expect(@lock).to be_locked_according_to_server
+      expect(@lock).to be_owned_according_to_internal_state
+      expect(@lock).to be_owned_according_to_server
+    end
   end
 
 
   describe '#unlock' do
     before(:each) do
       force_erase_lock_object
-      @lock = create(logger: Logger.new(StringIO.new))
+      @lock = create
     end
 
     after :each do
@@ -170,7 +214,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     end
 
     def lock_and_unlock
-      expect(@lock.try_lock).to be_truthy
+      @lock.lock(timeout: 0)
       deleted = nil
       expect { deleted = @lock.unlock }.not_to raise_error
       deleted
@@ -199,7 +243,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     end
 
     it 'works if the lock object is already deleted' do
-      expect(@lock.try_lock).to be_truthy
+      @lock.lock(timeout: 0)
       force_erase_lock_object
       deleted = nil
       expect { deleted = @lock.unlock }.not_to raise_error
