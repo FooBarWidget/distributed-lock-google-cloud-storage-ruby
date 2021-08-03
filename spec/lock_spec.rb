@@ -219,11 +219,6 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
 
 
   describe '#unlock' do
-    before(:each) do
-      force_erase_lock_object
-      @lock = create
-    end
-
     after :each do
       @lock.abandon if @lock
     end
@@ -236,6 +231,9 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     end
 
     it 'releases the lock' do
+      force_erase_lock_object
+      @lock = create
+
       expect(lock_and_unlock).to be_truthy
       expect(@lock).not_to be_locked_according_to_internal_state
       expect(@lock).not_to be_locked_according_to_server
@@ -244,6 +242,9 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     end
 
     specify 'checking for health is not possible due to being unlocked' do
+      force_erase_lock_object
+      @lock = create
+
       lock_and_unlock
       expect { @lock.healthy? }.to \
         raise_error(DistributedLock::GoogleCloudStorage::NotLockedError)
@@ -252,12 +253,18 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     end
 
     specify 'unlocking again is not possible' do
+      force_erase_lock_object
+      @lock = create
+
       lock_and_unlock
       expect { @lock.unlock }.to \
         raise_error(DistributedLock::GoogleCloudStorage::NotLockedError)
     end
 
     it 'works if the lock object is already deleted' do
+      force_erase_lock_object
+      @lock = create
+
       @lock.lock(timeout: 0)
       force_erase_lock_object
       deleted = nil
@@ -267,6 +274,21 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).not_to be_locked_according_to_server
       expect(@lock).not_to be_owned_according_to_internal_state
       expect(@lock).not_to be_owned_according_to_server
+    end
+
+    it 'does not delete the lock object upon detecting unhealthiness' do
+      force_erase_lock_object
+      @lock = create(refresh_interval: 0.1)
+      @lock.lock(timeout: 0)
+      gcloud_bucket.file(LOCK_PATH, skip_lookup: true).update do |f|
+        f.metadata['something'] = '123'
+      end
+      eventually(timeout: 5) do
+        !@lock.healthy?
+      end
+
+      @lock.unlock
+      expect(gcloud_bucket.file(LOCK_PATH)).not_to be_nil
     end
   end
 
@@ -302,6 +324,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       end
       expect { @lock.check_health! }.to \
         raise_error(DistributedLock::GoogleCloudStorage::LockUnhealthyError)
+      expect(log_output.string).to include('Lock object has an unexpected metageneration number')
     end
 
     it 'declares unhealthiness when the lock object is deleted' do
@@ -314,6 +337,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       end
       expect { @lock.check_health! }.to \
         raise_error(DistributedLock::GoogleCloudStorage::LockUnhealthyError)
+      expect(log_output.string).to include('Lock object has been unexpectedly deleted')
     end
   end
 end
