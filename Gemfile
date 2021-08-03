@@ -6,11 +6,16 @@ source 'https://rubygems.org'
 
 gem 'google-cloud-storage'
 
-gem 'pry'
-gem 'byebug'
-gem 'rubocop'
-gem 'sord'
-gem 'redcarpet'
-gem 'rspec'
-gem 'rspec-retry'
-gem 'dotenv'
+group :development do
+  gem 'pry'
+  gem 'byebug'
+  gem 'rubocop'
+end
+
+group :development, :ci do
+  gem 'sord'
+  gem 'redcarpet'
+  gem 'rspec'
+  gem 'rspec-retry'
+  gem 'dotenv'
+end
