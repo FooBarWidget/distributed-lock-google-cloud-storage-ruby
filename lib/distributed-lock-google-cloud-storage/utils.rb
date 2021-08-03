@@ -28,13 +28,14 @@ module DistributedLock
       # If the block returns `[:success, any value]` then this function returns `any value`.
       # If the block returns just `:success` then this function returns nil.
       #
-      # @param [Numeric] timeout
-      # @param [#call] retry_logger Will be called every time we retry. The parameter
+      # @param timeout [Numeric]
+      # @param retry_logger [#call] Will be called every time we retry. The parameter
       #   passed is a Float, indicating the seconds that we'll sleep until the next retry.
       # @param backoff_min [Numeric]
       # @param backoff_max [Numeric]
       # @param backoff_multiplier [Numeric]
       # @yield
+      # @return The block's return value, or nil.
       def retry_with_backoff_until_success(timeout,
         retry_logger: nil,
         backoff_min: DEFAULT_BACKOFF_MIN,
@@ -67,6 +68,12 @@ module DistributedLock
       # (fewest contended calls) and "Decorrelated Jitter" (lowest completion time).
       # We choose "Decorrelated Jitter" because we care most about completion time:
       # Google can probably handle a slight increase in contended calls.
+      #
+      # @param last_value [Numeric]
+      # @param backoff_min [Numeric]
+      # @param backoff_max [Numeric]
+      # @param backoff_multiplier [Numeric]
+      # @return [Numeric]
       def calc_sleep_time(last_value, backoff_min, backoff_max, backoff_multiplier)
         result = rand(backoff_min.to_f .. (last_value * backoff_multiplier).to_f)
         [result, backoff_max].min
@@ -83,13 +90,13 @@ module DistributedLock
       # We take the lock while the block is being yielded. We release the lock while we're
       # sleeping.
       #
-      # @param [Mutex] mutex
-      # @param [ConditionVariable] cond
-      # @param [Numeric] interval
-      # @param [Integer] max_failures
-      # @param [#call] check_quit Will be called regularly to check whether we should stop.
+      # @param mutex [Mutex]
+      # @param cond [ConditionVariable]
+      # @param interval [Numeric]
+      # @param max_failures [Integer]
+      # @param check_quit [#call] Will be called regularly to check whether we should stop.
       #   This callable must return a Boolean.
-      # @param [#call, nil] schedule_calculated
+      # @param schedule_calculated [#call, nil]
       # @yield
       # @yieldreturn [Boolean] True to indicate success, false to indicate failure.
       # @return [Boolean] True if this function stopped because `check_quit` returned true, false
@@ -125,6 +132,10 @@ module DistributedLock
         fail_count < max_failures
       end
 
+      # @param mutex [Mutex]
+      # @param cond [ConditionVariable]
+      # @param timeout [Numeric]
+      # @return [void]
       def wait_on_condition_variable(mutex, cond, timeout)
         cond.wait(mutex, timeout)
       end

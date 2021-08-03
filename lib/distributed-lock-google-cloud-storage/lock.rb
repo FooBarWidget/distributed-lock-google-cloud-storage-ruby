@@ -30,22 +30,22 @@ module DistributedLock
       # @param thread_safe [Boolean] Whether this Lock instance should be thread-safe. When true, the thread's
       #   identity will be included in the lock object's owner identity string, section "Thread-safety".
       # @param logger A Logger-compatible object to log progress to. See also the note about thread-safety.
-      # @param ttl [Integer, Float] The lock is considered stale if it's age (in seconds) is older than this value.
+      # @param ttl [Numeric] The lock is considered stale if it's age (in seconds) is older than this value.
       #   This value should be generous, on the order of minutes.
-      # @param refresh_interval [Integer, Float, nil]
+      # @param refresh_interval [Numeric, nil]
       #   We'll refresh the lock's timestamp every `refresh_interval` seconds. This value should be many
       #   times smaller than `stale_time`, so that we can detect an unhealthy lock long before it becomes stale.
       #
-      #   This value must be smaller than `ttl / MAX_REFRESH_FAILS`.
+      #   This value must be smaller than `ttl / max_refresh_fails`.
       #
       #   Default: `stale_time / 8`
       # @param max_refresh_fails [Integer]
       #   The lock will be declared unhealthy if refreshing fails this many times consecutively.
-      # @param backoff_min [Integer, Float] Minimum amount of time, in seconds, to back off when
+      # @param backoff_min [Numeric] Minimum amount of time, in seconds, to back off when
       #   waiting for a lock to become available. Must be at least 0.
-      # @param backoff_max [Integer, Float] Maximum amount of time, in seconds, to back off when
+      # @param backoff_max [Numeric] Maximum amount of time, in seconds, to back off when
       #   waiting for a lock to become available. Must be at least `backoff_min`.
-      # @param backoff_multiplier [Integer, Float] Factor to increase the backoff time by, each time
+      # @param backoff_multiplier [Numeric] Factor to increase the backoff time by, each time
       #   when acquiring the lock fails. Must be at least 0.
       # @param object_acl [String, nil] A predefined set of access control to apply to the Cloud Storage
       #   object. See the `acl` parameter in
@@ -69,7 +69,7 @@ module DistributedLock
         backoff_multiplier: DEFAULT_BACKOFF_MULTIPLIER,
         object_acl: nil, cloud_storage_options: nil, cloud_storage_bucket_options: nil)
 
-        check_refresh_interval_allowed!(ttl, refresh_interval)
+        check_refresh_interval_allowed!(ttl, refresh_interval, max_refresh_fails)
         check_backoff_min!(backoff_min)
         check_backoff_max!(backoff_max, backoff_min)
         check_backoff_multiplier!(backoff_multiplier)
@@ -95,24 +95,32 @@ module DistributedLock
 
       # Returns whether this Lock instance's internal state believes that the lock
       # is currently held by this instance. Does not check whether the lock is stale.
+      #
+      # @return [Boolean]
       def locked_according_to_internal_state?
         !@owner.nil?
       end
 
       # Returns whether the server believes that the lock is currently held by somebody.
       # Does not check whether the lock is stale.
+      #
+      # @return [Boolean]
       def locked_according_to_server?
         !@bucket.file(@path).nil?
       end
 
       # Returns whether this Lock instance's internal state believes that the lock
       # is held by the current Lock instance in the calling thread.
+      #
+      # @return [Boolean]
       def owned_according_to_internal_state?
         @owner == identity
       end
 
       # Returns whether the server believes that the lock is held by the current
       # Lock instance in the calling thread.
+      #
+      # @return [Boolean]
       def owned_according_to_server?
         file = @bucket.file(@path)
         return false if file.nil?
@@ -123,7 +131,8 @@ module DistributedLock
       # obtained by some other app identity or some other thread, waits until it becomes available,
       # or until timeout.
       #
-      # @param timeout [Integer, Float] The timeout in seconds.
+      # @param timeout [Numeric] The timeout in seconds.
+      # @return [void]
       # @raise [AlreadyLockedError] This Lock instance — according to its internal state — believes
       #   that it's already holding the lock.
       # @raise [TimeoutError] Failed to acquire the lock within `timeout` seconds.
@@ -167,7 +176,7 @@ module DistributedLock
       #
       # @return [Boolean] True if the lock object was actually deleted, false if the lock object
       #   was already deleted.
-      # @raises [NotLockedError] This Lock instance — according to its internal state — believes
+      # @raise [NotLockedError] This Lock instance — according to its internal state — believes
       #   that it isn't currently holding the lock.
       def unlock
         raise NotLockedError, 'Not locked' if !locked_according_to_internal_state?
@@ -202,6 +211,8 @@ module DistributedLock
       # #locked_according_to_internal_state? returns false.
       #
       # Does not modify any server data, so #locked_according_to_server? may still return true.
+      #
+      # @return [void]
       def abandon
         shutdown_refresher_thread if locked_according_to_internal_state?
       end
@@ -211,7 +222,8 @@ module DistributedLock
       #
       # It only makes sense to call this method after having obtained this lock.
       #
-      # @raises [NotLockedError] This lock was not obtained.
+      # @return [Boolean]
+      # @raise [NotLockedError] This lock was not obtained.
       def healthy?
         raise NotLockedError, 'Not locked' if !locked_according_to_internal_state?
         @refresher_thread.alive?
@@ -221,8 +233,9 @@ module DistributedLock
       #
       # It only makes sense to call this method after having obtained this lock.
       #
-      # @raises [LockUnhealthyError] When an unhealthy state is detected.
-      # @raises [NotLockedError] This lock was not obtained.
+      # @return [void]
+      # @raise [LockUnhealthyError] When an unhealthy state is detected.
+      # @raise [NotLockedError] This lock was not obtained.
       def check_health!
         raise LockUnhealthyError, 'Lock is not healthy' if !healthy?
       end
@@ -230,24 +243,39 @@ module DistributedLock
 
       private
 
-      def check_refresh_interval_allowed!(ttl, refresh_interval)
-        if refresh_interval && refresh_interval >= ttl.to_f / MAX_REFRESH_FAILS
-          raise ArgumentError, 'refresh_interval must be smaller than ttl / MAX_REFRESH_FAILS'
+      # @param ttl [Numeric]
+      # @param refresh_interval [Numeric]
+      # @param max_refresh_fails [Integer]
+      # @return [void]
+      # @raise [ArgumentError]
+      def check_refresh_interval_allowed!(ttl, refresh_interval, max_refresh_fails)
+        if refresh_interval && refresh_interval >= ttl.to_f / max_refresh_fails
+          raise ArgumentError, 'refresh_interval must be smaller than ttl / max_refresh_fails'
         end
       end
 
+      # @param backoff_min [Numeric]
+      # @return [void]
+      # @raise [ArgumentError]
       def check_backoff_min!(backoff_min)
         if backoff_min < 0
           raise ArgumentError, 'backoff_min must be at least 0'
         end
       end
 
+      # @param backoff_max [Numeric]
+      # @param backoff_min [Numeric]
+      # @return [void]
+      # @raise [ArgumentError]
       def check_backoff_max!(backoff_max, backoff_min)
         if backoff_max < backoff_min
           raise ArgumentError, 'backoff_max may not be smaller than backoff_min'
         end
       end
 
+      # @param backoff_multiplier [Numeric]
+      # @return [void]
+      # @raise [ArgumentError]
       def check_backoff_multiplier!(backoff_multiplier)
         if backoff_multiplier < 0
           raise ArgumentError, 'backoff_multiplier must be at least 0'
@@ -255,11 +283,17 @@ module DistributedLock
       end
 
 
+      # @param options [Hash]
+      # @return [Google::Cloud::Storage::Project]
       def create_gcloud_storage_client(options)
         options ||= {}
         Google::Cloud::Storage.new(**options)
       end
 
+      # @param client [Google::Cloud::Storage::Project]
+      # @param bucket_name [String]
+      # @param options [Hash]
+      # @return [Google::Cloud::Storage::Bucket]
       def get_gcloud_storage_bucket(client, bucket_name, options)
         options ||= {}
         client.bucket(bucket_name, skip_lookup: true, **options)
@@ -305,20 +339,25 @@ module DistributedLock
       end
 
       # @param file [Google::Cloud::Storage::File]
+      # @return [Boolean]
       def lock_stale?(file)
         Time.now.to_f > file.metadata['expires_at'].to_f
       end
 
+      # @param sleep_time [Numeric]
+      # @return [void]
       def log_lock_retry(sleep_time)
         @logger.info("Unable to acquire lock. Will try again in #{sleep_time.to_i} seconds")
       end
 
+      # @return [void]
       def spawn_refresher_thread
         @refresher_thread = Thread.new do
           refresher_thread_main
         end
       end
 
+      # @return [void]
       def shutdown_refresher_thread
         @refresher_mutex.synchronize do
           @refresher_quit = true
@@ -328,6 +367,7 @@ module DistributedLock
         @refresher_thread = nil
       end
 
+      # @return [void]
       def refresher_thread_main
         params = {
           mutex: @refresher_mutex,
@@ -348,6 +388,7 @@ module DistributedLock
         end
       end
 
+      # @return [void]
       def refresh_lock
         @logger.info 'Refreshing lock'
         begin

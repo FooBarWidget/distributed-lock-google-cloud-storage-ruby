@@ -24,16 +24,19 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       **options)
   end
 
+  def gcloud_bucket(**options)
+    @bucket ||= begin
+      storage = Google::Cloud::Storage.new(credentials: require_envvar('TEST_GCLOUD_CREDENTIALS_PATH'))
+      storage.bucket(require_envvar('TEST_GCLOUD_BUCKET'), skip_lookup: true)
+    end
+  end
+
   def force_recreate_lock_object(**options)
-    storage = Google::Cloud::Storage.new(credentials: require_envvar('TEST_GCLOUD_CREDENTIALS_PATH'))
-    bucket = storage.bucket(require_envvar('TEST_GCLOUD_BUCKET'), skip_lookup: true)
-    bucket.create_file(StringIO.new, LOCK_PATH, cache_control: 'no-store', **options)
+    gcloud_bucket.create_file(StringIO.new, LOCK_PATH, cache_control: 'no-store', **options)
   end
 
   def force_erase_lock_object
-    storage = Google::Cloud::Storage.new(credentials: require_envvar('TEST_GCLOUD_CREDENTIALS_PATH'))
-    bucket = storage.bucket(require_envvar('TEST_GCLOUD_BUCKET'), skip_lookup: true)
-    bucket.file(LOCK_PATH, skip_lookup: true).delete
+    gcloud_bucket.file(LOCK_PATH, skip_lookup: true).delete
   rescue Google::Cloud::NotFoundError
     # Do nothing
   end
@@ -83,26 +86,29 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       force_erase_lock_object
       @lock = create
 
-      @lock.lock(timeout: DEFAULT_TIMEOUT)
+      @lock.lock(timeout: 0)
       expect(@lock).to be_locked_according_to_internal_state
       expect(@lock).to be_locked_according_to_server
       expect(@lock).to be_owned_according_to_internal_state
       expect(@lock).to be_owned_according_to_server
+      expect(@lock).to be_healthy
+      expect { @lock.check_health! }.not_to raise_error
     end
 
     it 'waits until the lock object is no longer taken' do
       force_erase_lock_object
       @lock = create
-      @lock.lock
+      @lock.lock(timeout: 0)
 
-      @lock2 = create(backoff_min: 0.01, backoff_max: 0.05)
+      @lock2 = create(backoff_min: 0.05, backoff_max: 0.05)
       @thread = Thread.new do
-        @lock2.lock
+        @lock2.lock(timeout: DEFAULT_TIMEOUT)
         Thread.current[:result] = {
           locked_according_to_internal_state: @lock2.locked_according_to_internal_state?,
           locked_according_to_server: @lock2.locked_according_to_server?,
           owned_according_to_internal_state: @lock2.owned_according_to_internal_state?,
           owned_according_to_server: @lock2.owned_according_to_server?,
+          healthy: @lock2.healthy?,
         }
       end
 
@@ -123,13 +129,14 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(result[:locked_according_to_server]).to be_truthy
       expect(result[:owned_according_to_internal_state]).to be_truthy
       expect(result[:owned_according_to_server]).to be_truthy
+      expect(result[:healthy]).to be_truthy
     end
 
     it 'raises AlreadyLockedError if called twice by the same instance and thread' do
       force_erase_lock_object
       @lock = create
 
-      @lock.lock(timeout: DEFAULT_TIMEOUT)
+      @lock.lock(timeout: 0)
       expect { @lock.lock }.to \
         raise_error(DistributedLock::GoogleCloudStorage::AlreadyLockedError)
     end
@@ -138,7 +145,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       force_erase_lock_object
       @lock = create
 
-      @lock.lock(timeout: DEFAULT_TIMEOUT)
+      @lock.lock(timeout: 0)
 
       thr = Thread.new do
         Thread.current.report_on_exception = false
@@ -150,6 +157,8 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_locked_according_to_server
       expect(@lock).to be_owned_according_to_internal_state
       expect(@lock).to be_owned_according_to_server
+      expect(@lock).to be_healthy
+      expect { @lock.check_health! }.not_to raise_error
     end
 
     it 'retries if the lock object was deleted right after failing to create it' do
@@ -174,6 +183,8 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_locked_according_to_server
       expect(@lock).to be_owned_according_to_internal_state
       expect(@lock).to be_owned_according_to_server
+      expect(@lock).to be_healthy
+      expect { @lock.check_health! }.not_to raise_error
     end
 
     it 'succeeds if the lock was previously abandoned by the same instance and thread' do
@@ -187,6 +198,8 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_locked_according_to_server
       expect(@lock).to be_owned_according_to_internal_state
       expect(@lock).to be_owned_according_to_server
+      expect(@lock).to be_healthy
+      expect { @lock.check_health! }.not_to raise_error
     end
 
     it 'cleans up stale locks' do
@@ -199,6 +212,8 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_locked_according_to_server
       expect(@lock).to be_owned_according_to_internal_state
       expect(@lock).to be_owned_according_to_server
+      expect(@lock).to be_healthy
+      expect { @lock.check_health! }.not_to raise_error
     end
   end
 
@@ -257,9 +272,48 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
 
 
   describe 'refreshing' do
-    it 'updates the update time'
-    it 'declares unhealthiness upon failing too many times in succession'
-    it 'declares unhealthiness when the metageneration number is inconsistent'
-    it 'declares unhealthiness when the lock object is deleted'
+    before :each do
+      force_erase_lock_object
+      @lock = create(refresh_interval: 0.1)
+      @lock.lock(timeout: 0)
+    end
+
+    after :each do
+      @lock.abandon if @lock
+    end
+
+    it 'updates the update time' do
+      orig_timestamp = gcloud_bucket.file(LOCK_PATH).updated_at
+      eventually(timeout: 5) do
+        current_timestamp = gcloud_bucket.file(LOCK_PATH, skip_lookup: true).updated_at
+        orig_timestamp != current_timestamp
+      end
+    end
+
+    it 'declares unhealthiness when the metageneration number is inconsistent' do
+      expect(@lock).to be_healthy
+      expect { @lock.check_health! }.not_to raise_error
+
+      gcloud_bucket.file(LOCK_PATH, skip_lookup: true).update do |f|
+        f.metadata['something'] = '123'
+      end
+      eventually(timeout: 5) do
+        !@lock.healthy?
+      end
+      expect { @lock.check_health! }.to \
+        raise_error(DistributedLock::GoogleCloudStorage::LockUnhealthyError)
+    end
+
+    it 'declares unhealthiness when the lock object is deleted' do
+      expect(@lock).to be_healthy
+      expect { @lock.check_health! }.not_to raise_error
+
+      force_erase_lock_object
+      eventually(timeout: 5) do
+        !@lock.healthy?
+      end
+      expect { @lock.check_health! }.to \
+        raise_error(DistributedLock::GoogleCloudStorage::LockUnhealthyError)
+    end
   end
 end
