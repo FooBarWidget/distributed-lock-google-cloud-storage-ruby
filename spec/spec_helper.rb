@@ -3,6 +3,18 @@ require 'google/cloud/errors'
 require 'rspec/retry'
 
 module Helpers
+  def self.print_all_thread_backtraces
+    puts '-------- Begin backtrace dump --------'
+    Thread.list.each do |thr|
+      puts "#### Thread #{thr}"
+      thr.backtrace.each do |line|
+        puts "    #{line}"
+      end
+      puts
+    end
+    puts '-------- End backtrace dump --------'
+  end
+
   def require_envvar(name)
     value = ENV[name]
     raise ArgumentError, "Required environment variable: #{name}" if value.to_s.empty?
@@ -44,3 +56,5 @@ RSpec.configure do |c|
   c.default_sleep_interval = 3
   c.exceptions_to_retry = [Google::Cloud::ResourceExhaustedError]
 end
+
+Signal.trap('QUIT') { Helpers.print_all_thread_backtraces }

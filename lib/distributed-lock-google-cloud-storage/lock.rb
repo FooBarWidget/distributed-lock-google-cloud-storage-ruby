@@ -11,9 +11,20 @@ require_relative 'utils'
 module DistributedLock
   module GoogleCloudStorage
     class Lock
-      DEFAULT_INSTANCE_IDENTITY = SecureRandom.hex(12).freeze
+      DEFAULT_INSTANCE_IDENTITY_PREFIX = SecureRandom.hex(12).freeze
 
       include Utils
+
+
+      # Generates a sane default instance identity string. The result is identical across multiple calls
+      # in the same process. It supports forking, so that calling this method in a forked child process
+      # automatically returns a different value than when called from the parent process.
+      #
+      # @return [String]
+      def self.default_instance_identity
+        "#{DEFAULT_INSTANCE_IDENTITY_PREFIX}-#{Process.pid}"
+      end
+
 
       # Creates a new Lock instance.
       #
@@ -62,7 +73,7 @@ module DistributedLock
       #   besides this `Lock` instance. This is because the logger will be
       #   written to by a background thread.
       # @raise [ArgumentError] When an invalid argument is detected.
-      def initialize(bucket_name:, path:, instance_identity: DEFAULT_INSTANCE_IDENTITY,
+      def initialize(bucket_name:, path:, instance_identity: self.class.default_instance_identity,
         thread_safe: true, logger: Logger.new($stderr),
         ttl: DEFAULT_TTL, refresh_interval: nil, max_refresh_fails: DEFAULT_MAX_REFRESH_FAILS,
         backoff_min: DEFAULT_BACKOFF_MIN, backoff_max: DEFAULT_BACKOFF_MAX,
@@ -73,6 +84,9 @@ module DistributedLock
         check_backoff_min!(backoff_min)
         check_backoff_max!(backoff_max, backoff_min)
         check_backoff_multiplier!(backoff_multiplier)
+
+
+        ### Read-only variables (safe to access concurrently) ###
 
         @bucket_name = bucket_name
         @path = path
@@ -89,8 +103,22 @@ module DistributedLock
 
         @client = create_gcloud_storage_client(cloud_storage_options)
         @bucket = get_gcloud_storage_bucket(@client, bucket_name, cloud_storage_bucket_options)
-        @refresher_mutex = Mutex.new
+
+        @state_mutex = Mutex.new
         @refresher_cond = ConditionVariable.new
+
+
+        ### Read-write variables protected by @state_mutex ###
+
+        @owner = nil
+        @metageneration = nil
+        @refresher_thread = nil
+
+        # The refresher generation is incremented every time we shutdown
+        # the refresher thread. It allows the refresher thread to know
+        # whether it's being shut down (and thus shouldn't access/modify
+        # state).
+        @refresher_generation = 0
       end
 
       # Returns whether this Lock instance's internal state believes that the lock
@@ -98,7 +126,9 @@ module DistributedLock
       #
       # @return [Boolean]
       def locked_according_to_internal_state?
-        !@owner.nil?
+        @state_mutex.synchronize do
+          unsynced_locked_according_to_internal_state?
+        end
       end
 
       # Returns whether the server believes that the lock is currently held by somebody.
@@ -114,7 +144,9 @@ module DistributedLock
       #
       # @return [Boolean]
       def owned_according_to_internal_state?
-        @owner == identity
+        @state_mutex.synchronize do
+          unsynced_owned_according_to_internal_state?
+        end
       end
 
       # Returns whether the server believes that the lock is held by the current
@@ -166,9 +198,11 @@ module DistributedLock
           end
         end
 
-        @owner = identity
-        @metageneration = file.metageneration
-        spawn_refresher_thread
+        @state_mutex.synchronize do
+          @owner = identity
+          @metageneration = file.metageneration
+          spawn_refresher_thread
+        end
         nil
       end
 
@@ -179,12 +213,17 @@ module DistributedLock
       # @raise [NotLockedError] This Lock instance — according to its internal state — believes
       #   that it isn't currently holding the lock.
       def unlock
-        raise NotLockedError, 'Not locked' if !locked_according_to_internal_state?
-        shutdown_refresher_thread
-        deleted = delete_lock_object(@metageneration)
-        @owner = nil
-        @metageneration = nil
-        deleted
+        metageneration = nil
+        thread = nil
+        @state_mutex.synchronize do
+          raise NotLockedError, 'Not locked' if !unsynced_locked_according_to_internal_state?
+          thread = shutdown_refresher_thread
+          metageneration = @metageneration
+          @owner = nil
+          @metageneration = nil
+        end
+        thread.join
+        delete_lock_object(metageneration)
       end
 
       # Obtains the lock, runs the block, and releases the lock when the block completes.
@@ -193,9 +232,12 @@ module DistributedLock
       # obtained by some other app identity or some other thread, waits until it becomes available,
       # or until timeout.
       #
-      # Accepts the same arguments as #lock.
+      # Accepts the same parameters as #lock.
       #
       # @return The block's return value.
+      # @raise [AlreadyLockedError] This Lock instance — according to its internal state — believes
+      #   that it's already holding the lock.
+      # @raise [TimeoutError] Failed to acquire the lock within `timeout` seconds.
       def synchronize(...)
         lock(...)
         begin
@@ -214,19 +256,32 @@ module DistributedLock
       #
       # @return [void]
       def abandon
-        shutdown_refresher_thread if locked_according_to_internal_state?
+        thread = nil
+        @state_mutex.synchronize do
+          if unsynced_locked_according_to_internal_state?
+            thread = shutdown_refresher_thread
+          end
+        end
+        thread.join if thread
       end
 
       # Returns whether the lock is healthy. A lock is considered healthy until
       # we fail to refresh the lock too many times consecutively.
+      #
+      # Failure to refresh could happen for many reasons, including but not limited
+      # to: network problems, the lock object being forcefully deleted by someone else.
+      #
+      # "Too many" is defined by the `max_refresh_fails` argument passed to the constructor.
       #
       # It only makes sense to call this method after having obtained this lock.
       #
       # @return [Boolean]
       # @raise [NotLockedError] This lock was not obtained.
       def healthy?
-        raise NotLockedError, 'Not locked' if !locked_according_to_internal_state?
-        @refresher_thread.alive?
+        @state_mutex.synchronize do
+          raise NotLockedError, 'Not locked' if !unsynced_locked_according_to_internal_state?
+          @refresher_thread.alive?
+        end
       end
 
       # Checks whether the lock is healthy. See #healthy? for the definition of "healthy".
@@ -306,6 +361,14 @@ module DistributedLock
         result
       end
 
+      def unsynced_locked_according_to_internal_state?
+        !@owner.nil?
+      end
+
+      def unsynced_owned_according_to_internal_state?
+        @owner == identity
+      end
+
       # Creates the lock object in Cloud Storage. Returns a Google::Cloud::Storage::File
       # on success, or nil if object already exists.
       #
@@ -352,34 +415,36 @@ module DistributedLock
 
       # @return [void]
       def spawn_refresher_thread
-        @refresher_thread = Thread.new do
-          refresher_thread_main
+        @refresher_thread = Thread.new(@refresher_generation) do |refresher_generation|
+          refresher_thread_main(refresher_generation)
         end
       end
 
-      # @return [void]
+      # Signals (but does not wait for) the refresher thread to shut down.
+      #
+      # @return [Thread]
       def shutdown_refresher_thread
-        @refresher_mutex.synchronize do
-          @refresher_quit = true
-          @refresher_cond.signal
-        end
-        @refresher_thread.join
+        thread = @refresher_thread
+        @refresher_generation += 1
+        @refresher_cond.signal
         @refresher_thread = nil
+        thread
       end
 
+      # @param [Integer] refresher_generation
       # @return [void]
-      def refresher_thread_main
+      def refresher_thread_main(refresher_generation)
         params = {
-          mutex: @refresher_mutex,
+          mutex: @state_mutex,
           cond: @refresher_cond,
           interval: @refresh_interval,
           max_failures: @max_refresh_fails,
-          check_quit: lambda { @refresher_quit },
+          check_quit: lambda { @refresher_generation != refresher_generation },
           schedule_calculated: lambda { |timeout| @logger.debug "Next lock refresh in #{timeout}s" }
         }
 
         result = work_regularly(**params) do
-          refresh_lock
+          refresh_lock(refresher_generation)
         end
 
         if !result
@@ -388,13 +453,19 @@ module DistributedLock
         end
       end
 
+      # @param [Integer] refresher_generation
       # @return [void]
-      def refresh_lock
+      def refresh_lock(refresher_generation)
+        metageneration = @state_mutex.synchronize do
+          return true if @refresher_generation != refresher_generation
+          @metageneration
+        end
+
         @logger.info 'Refreshing lock'
         begin
           file = @bucket.file(@path, skip_lookup: true)
           begin
-            file.update(if_metageneration_match: @metageneration) do |f|
+            file.update(if_metageneration_match: metageneration) do |f|
               f.metadata['expires_at'] = (Time.now + @ttl).to_f
             end
           rescue Google::Cloud::FailedPreconditionError
@@ -403,7 +474,13 @@ module DistributedLock
             raise 'Lock object has been unexpectedly deleted'
           end
 
-          @metageneration = file.metageneration
+          @state_mutex.synchronize do
+            if @refresher_generation != refresher_generation
+              @logger.debug 'Abort refreshing lock'
+              return true
+            end
+            @metageneration = file.metageneration
+          end
           @logger.debug 'Done refreshing lock'
           true
         rescue => e
