@@ -138,7 +138,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Utils do
       expect(result).to be_truthy
     end
 
-    it 'yields the block until it fails too many time in succession' do
+    it 'yields the block until it temporarily fails too many time in succession' do
       called = 0
 
       expect(utils).to \
@@ -155,6 +155,30 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Utils do
 
       expect(called).to eq(3)
       expect(result).to be_falsey
+    end
+
+    it 'yields the block until it permanently fails' do
+      called = 0
+
+      expect(utils).to \
+        receive(:wait_on_condition_variable).
+        with(@mutex, @cond, kind_of(Numeric)).
+        exactly(2).times
+
+      result, permanent = utils.work_regularly(mutex: @mutex, cond: @cond,
+        interval: 1, max_failures: 3, check_quit: method(:check_quit)) do
+
+        called += 1
+        if called >= 2
+          [false, :permanent]
+        else
+          false
+        end
+      end
+
+      expect(called).to eq(2)
+      expect(result).to be_falsey
+      expect(permanent).to be_truthy
     end
 
     it 'resets the failure counter when the block succeeds' do

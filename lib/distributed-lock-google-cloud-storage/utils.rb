@@ -81,7 +81,8 @@ module DistributedLock
 
 
       # Once every `interval` seconds, yields the given block, until `check_quit` returns true
-      # or until the block failed `max_failures` times in succession.
+      # until the block temporarily fails `max_failures` times in succession, or until the block
+      # permanently fails.
       #
       # Sleeping between yields works by sleeping on the given condition variable. You can thus
       # force this function to wake up (e.g. to tell it that it should quit) by signalling the
@@ -98,15 +99,18 @@ module DistributedLock
       #   This callable must return a Boolean.
       # @param schedule_calculated [#call, nil]
       # @yield
-      # @yieldreturn [Boolean] True to indicate success, false to indicate failure.
-      # @return [Boolean] True if this function stopped because `check_quit` returned true, false
-      #   if this function stopped because the block failed `max_failures` times in succession.
+      # @yieldreturn [Boolean, Array<false, :permanent>] `true` to indicate success,
+      #   `false` to indicate temporary failure, `[false, :permanent]` to indicate permanent failure.
+      # @return [Boolean, Array<false, :permanent>] `true` if this function stopped because `check_quit` returned true,
+      #   `false` if this function stopped because the block temporarily failed `max_failures` times in succession,
+      #   `[false, :permanent]` if this function stopped because the block failed permanently.
       def work_regularly(mutex:, cond:, interval:, max_failures:, check_quit:, schedule_calculated: nil)
         fail_count = 0
         next_time = monotonic_time + interval
+        permanent_failure = false
 
         mutex.synchronize do
-          while !check_quit.call && fail_count < max_failures
+          while !check_quit.call && fail_count < max_failures && !permanent_failure
             timeout = [0, next_time - monotonic_time].max
             schedule_calculated.call(timeout) if schedule_calculated
             wait_on_condition_variable(mutex, cond, timeout)
@@ -116,20 +120,26 @@ module DistributedLock
             next_time = monotonic_time + interval
             mutex.unlock
             begin
-              success = yield
+              result, permanent = yield
             ensure
               mutex.lock
             end
 
-            if success
+            if result
               fail_count = 0
+            elsif permanent == :permanent
+              permanent_failure = true
             else
               fail_count += 1
             end
           end
         end
 
-        fail_count < max_failures
+        if permanent_failure
+          [false, :permanent]
+        else
+          fail_count < max_failures
+        end
       end
 
       # @param mutex [Mutex]

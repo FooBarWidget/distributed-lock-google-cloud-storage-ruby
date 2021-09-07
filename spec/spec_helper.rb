@@ -53,8 +53,11 @@ RSpec.configure do |c|
   c.verbose_retry = true
   c.display_try_failure_messages = true
   c.default_retry_count = 3
-  c.default_sleep_interval = 3
-  c.exceptions_to_retry = [Google::Cloud::ResourceExhaustedError]
+  c.default_sleep_interval = 10
+  c.exceptions_to_retry = [
+    Google::Cloud::ResourceExhaustedError,
+    Google::Cloud::UnavailableError
+  ]
 end
 
 Signal.trap('QUIT') { Helpers.print_all_thread_backtraces }

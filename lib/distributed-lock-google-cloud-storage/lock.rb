@@ -41,6 +41,7 @@ module DistributedLock
       # @param thread_safe [Boolean] Whether this Lock instance should be thread-safe. When true, the thread's
       #   identity will be included in the lock object's owner identity string, section "Thread-safety".
       # @param logger A Logger-compatible object to log progress to. See also the note about thread-safety.
+      # @param logger_mutex A Mutex to synchronize multithreaded writes to the logger.
       # @param ttl [Numeric] The lock is considered stale if it's age (in seconds) is older than this value.
       #   This value should be generous, on the order of minutes.
       # @param refresh_interval [Numeric, nil]
@@ -69,12 +70,12 @@ module DistributedLock
       #   {https://googleapis.dev/ruby/google-cloud-storage/latest/Google/Cloud/Storage/Project.html#bucket-instance_method Google::Cloud::Storage::Project#bucket}.
       #   See its documentation to learn which options are available.
       #
-      # @note The logger must either be thread-safe, or it musn't be used by anything
-      #   besides this `Lock` instance. This is because the logger will be
+      # @note The logger must either be thread-safe, or all writes to this logger by anything besides
+      #   this `Lock` instance must be synchronized through `logger_mutex`. This is because the logger will be
       #   written to by a background thread.
       # @raise [ArgumentError] When an invalid argument is detected.
       def initialize(bucket_name:, path:, instance_identity: self.class.default_instance_identity,
-        thread_safe: true, logger: Logger.new($stderr),
+        thread_safe: true, logger: Logger.new($stderr), logger_mutex: Mutex.new,
         ttl: DEFAULT_TTL, refresh_interval: nil, max_refresh_fails: DEFAULT_MAX_REFRESH_FAILS,
         backoff_min: DEFAULT_BACKOFF_MIN, backoff_max: DEFAULT_BACKOFF_MAX,
         backoff_multiplier: DEFAULT_BACKOFF_MULTIPLIER,
@@ -93,6 +94,7 @@ module DistributedLock
         @instance_identity = instance_identity
         @thread_safe = thread_safe
         @logger = logger
+        @logger_mutex = logger_mutex
         @ttl = ttl
         @refresh_interval = refresh_interval || ttl * DEFAULT_TTL_REFRESH_INTERVAL_DIVIDER
         @max_refresh_fails = max_refresh_fails
@@ -135,6 +137,7 @@ module DistributedLock
       # Does not check whether the lock is stale.
       #
       # @return [Boolean]
+      # @raise [Google::Cloud::Error]
       def locked_according_to_server?
         !@bucket.file(@path).nil?
       end
@@ -153,6 +156,7 @@ module DistributedLock
       # Lock instance in the calling thread.
       #
       # @return [Boolean]
+      # @raise [Google::Cloud::Error]
       def owned_according_to_server?
         file = @bucket.file(@path)
         return false if file.nil?
@@ -168,6 +172,7 @@ module DistributedLock
       # @raise [AlreadyLockedError] This Lock instance — according to its internal state — believes
       #   that it's already holding the lock.
       # @raise [TimeoutError] Failed to acquire the lock within `timeout` seconds.
+      # @raise [Google::Cloud::Error]
       def lock(timeout: 2 * @ttl)
         raise AlreadyLockedError, 'Already locked' if owned_according_to_internal_state?
 
@@ -177,32 +182,40 @@ module DistributedLock
           backoff_max: @backoff_max,
           backoff_multiplier: @backoff_multiplier) do
 
+          log_debug { 'Acquiring lock' }
           if (file = create_lock_object)
+            log_debug { 'Successfully acquired lock' }
             [:success, file]
           else
+            log_debug { 'Error acquiring lock. Investigating why...' }
             file = @bucket.file(@path)
             if file.nil?
-              @logger.warn 'Lock was deleted right after having created it. Retrying.'
+              log_warn { 'Lock was deleted right after having created it. Retrying.' }
               :retry_immediately
             elsif file.metadata['identity'] == identity
-              @logger.warn 'Lock was already owned by this instance, but was abandoned. Resetting lock'
+              log_warn { 'Lock was already owned by this instance, but was abandoned. Resetting lock' }
               delete_lock_object(file.metageneration)
               :retry_immediately
             else
               if lock_stale?(file)
-                @logger.warn 'Lock is stale. Resetting lock'
+                log_warn { 'Lock is stale. Resetting lock' }
                 delete_lock_object(file.metageneration)
+              else
+                log_debug { 'Lock was already acquired, and is not stale' }
               end
               :error
             end
           end
         end
 
+        refresher_generation = nil
         @state_mutex.synchronize do
           @owner = identity
           @metageneration = file.metageneration
           spawn_refresher_thread
+          refresher_generation = @refresher_generation
         end
+        log_debug { "Locked. refresher_generation=#{refresher_generation}, metageneration=#{file.metageneration}" }
         nil
       end
 
@@ -212,18 +225,25 @@ module DistributedLock
       #   was already deleted.
       # @raise [NotLockedError] This Lock instance — according to its internal state — believes
       #   that it isn't currently holding the lock.
+      # @raise [Google::Cloud::Error]
       def unlock
+        refresher_generation = nil
         metageneration = nil
         thread = nil
+
         @state_mutex.synchronize do
           raise NotLockedError, 'Not locked' if !unsynced_locked_according_to_internal_state?
+          refresher_generation = @refresher_generation
           thread = shutdown_refresher_thread
           metageneration = @metageneration
           @owner = nil
           @metageneration = nil
         end
+
         thread.join
-        delete_lock_object(metageneration)
+        result = delete_lock_object(metageneration)
+        log_debug { "Unlocked. refresher_generation=#{refresher_generation}, metageneration=#{metageneration}" }
+        result
       end
 
       # Obtains the lock, runs the block, and releases the lock when the block completes.
@@ -256,13 +276,22 @@ module DistributedLock
       #
       # @return [void]
       def abandon
+        refresher_generation = nil
         thread = nil
+
         @state_mutex.synchronize do
           if unsynced_locked_according_to_internal_state?
+            refresher_generation = @refresher_generation
             thread = shutdown_refresher_thread
           end
         end
-        thread.join if thread
+
+        if thread
+          thread.join
+          log_debug { "Abandoned locked lock. refresher_generation=#{refresher_generation}" }
+        else
+          log_debug { "Abandoned unlocked lock" }
+        end
       end
 
       # Returns whether the lock is healthy. A lock is considered healthy until
@@ -410,7 +439,37 @@ module DistributedLock
       # @param sleep_time [Numeric]
       # @return [void]
       def log_lock_retry(sleep_time)
-        @logger.info("Unable to acquire lock. Will try again in #{sleep_time.to_i} seconds")
+        log_info do
+          sprintf("Unable to acquire lock. Will try again in %.1f seconds", sleep_time)
+        end
+      end
+
+      # @return [void]
+      def log_error(&block)
+        @logger_mutex.synchronize do
+          @logger.error(&block)
+        end
+      end
+
+      # @return [void]
+      def log_warn(&block)
+        @logger_mutex.synchronize do
+          @logger.warn(&block)
+        end
+      end
+
+      # @return [void]
+      def log_info(&block)
+        @logger_mutex.synchronize do
+          @logger.info(&block)
+        end
+      end
+
+      # @return [void]
+      def log_debug(&block)
+        @logger_mutex.synchronize do
+          @logger.debug(&block)
+        end
       end
 
       # @return [void]
@@ -440,28 +499,42 @@ module DistributedLock
           interval: @refresh_interval,
           max_failures: @max_refresh_fails,
           check_quit: lambda { @refresher_generation != refresher_generation },
-          schedule_calculated: lambda { |timeout| @logger.debug "Next lock refresh in #{timeout}s" }
+          schedule_calculated: lambda { |timeout|
+            log_debug { sprintf("Next lock refresh in %.1fs", timeout) }
+          }
         }
 
-        result = work_regularly(**params) do
+        result, permanent = work_regularly(**params) do
           refresh_lock(refresher_generation)
         end
 
         if !result
-          @logger.error("Lock refresh failed #{@max_refresh_fails} times in succession." \
-            ' Declaring lock as unhealthy')
+          if permanent
+            log_error do
+              "Lock refresh failed permanently." \
+                ' Declaring lock as unhealthy'
+            end
+          else
+            log_error do
+              "Lock refresh failed #{@max_refresh_fails} times in succession." \
+                ' Declaring lock as unhealthy'
+            end
+          end
         end
+        log_debug { 'Exiting refresher thread' }
       end
 
       # @param [Integer] refresher_generation
-      # @return [void]
+      # @return [Boolean, Array<true, :permanent>]
       def refresh_lock(refresher_generation)
+        permanent_failure = false
+
         metageneration = @state_mutex.synchronize do
           return true if @refresher_generation != refresher_generation
           @metageneration
         end
 
-        @logger.info 'Refreshing lock'
+        log_info { 'Refreshing lock' }
         begin
           file = @bucket.file(@path, skip_lookup: true)
           begin
@@ -469,23 +542,25 @@ module DistributedLock
               f.metadata['expires_at'] = (Time.now + @ttl).to_f
             end
           rescue Google::Cloud::FailedPreconditionError
+            permanent_failure = :permanent
             raise 'Lock object has an unexpected metageneration number'
           rescue Google::Cloud::NotFoundError
+            permanent_failure = :permanent
             raise 'Lock object has been unexpectedly deleted'
           end
 
           @state_mutex.synchronize do
             if @refresher_generation != refresher_generation
-              @logger.debug 'Abort refreshing lock'
+              log_debug { 'Abort refreshing lock' }
               return true
             end
             @metageneration = file.metageneration
           end
-          @logger.debug 'Done refreshing lock'
+          log_debug { "Done refreshing lock. metageneration=#{file.metageneration}" }
           true
         rescue => e
-          @logger.error("Error refreshing lock: #{e}")
-          false
+          log_error { "Error refreshing lock: #{e}" }
+          [false, permanent_failure]
         end
       end
     end

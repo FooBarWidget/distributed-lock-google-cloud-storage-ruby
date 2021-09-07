@@ -11,6 +11,18 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
 
   around(:each) do |ex|
     ex.run_with_retry retry: 3
+    if ex.exception
+      debug_logs = []
+      if !(log1 = log_output.string).empty?
+        debug_logs << "Lock debug logs 1:\n" + log1
+      end
+      if !(log2 = log_output2.string).empty?
+        debug_logs << "Lock debug logs 2:\n" + log2
+      end
+      if !debug_logs.empty?
+        raise debug_logs.join("\n\n")
+      end
+    end
   end
 
   def create(**options)
@@ -43,6 +55,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
 
 
   let(:log_output) { StringIO.new }
+  let(:log_output2) { StringIO.new }
 
 
   describe 'initial state' do
@@ -100,7 +113,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       @lock = create
       @lock.lock(timeout: 0)
 
-      @lock2 = create(backoff_min: 0.05, backoff_max: 0.05)
+      @lock2 = create(backoff_min: 0.05, backoff_max: 0.05, logger: Logger.new(log_output2))
       @thread = Thread.new do
         @lock2.lock(timeout: DEFAULT_TIMEOUT)
         Thread.current[:result] = {
@@ -117,7 +130,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       end
 
       @lock.unlock
-      eventually(timeout: 1, interval: 0.05) do
+      eventually(timeout: 5, interval: 0.1) do
         !@thread.alive?
       end
 
@@ -316,10 +329,14 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_healthy
       expect { @lock.check_health! }.not_to raise_error
 
-      gcloud_bucket.file(LOCK_PATH, skip_lookup: true).update do |f|
+      file = gcloud_bucket.file(LOCK_PATH)
+      orig_metageneration = file.metageneration
+
+      file.update do |f|
         f.metadata['something'] = '123'
       end
-      eventually(timeout: 5) do
+      expect(file.metageneration).not_to eq(orig_metageneration)
+      eventually(timeout: 10) do
         !@lock.healthy?
       end
       expect { @lock.check_health! }.to \

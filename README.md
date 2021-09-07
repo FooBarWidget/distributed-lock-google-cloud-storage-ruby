@@ -66,3 +66,22 @@ lock.synchronize do
 end
 ~~~
 
+## Google Cloud authentication
+
+We use [Application Default Credentials](https://cloud.google.com/docs/authentication/production#automatically) by default. If you don't want that, then pass a `cloud_storage_options` argument to the constructor, in which you set the `credentials` option.
+
+~~~ruby
+DistributedLock::GoogleCloudStorage::Lock(
+  bucket_name: 'your bucket name',
+  path: 'locks/mywork',
+  cloud_storage_options: {
+  	credentials: '/path/to/keyfile.json'
+  }
+)
+~~~
+
+`credentials` is anything accepted by [Google::Cloud::Storage.new's `credentials` parameter](https://googleapis.dev/ruby/google-cloud-storage/latest/Google/Cloud/Storage.html#new-class_method), which currently means it's one of these:
+
+ * A String: a path to a keyfile.
+ * A Hash: the contents of a keyfile.
+ * A `Google::Auth::Credentials` object.
