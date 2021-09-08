@@ -66,9 +66,11 @@ jobs:
 
 
   publish:
+    name: Publish
     needs:
       - editorconfig
       - build-and-test
+    runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v2
 
