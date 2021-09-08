@@ -2,12 +2,13 @@
 
 require 'logger'
 require 'stringio'
+require 'securerandom'
 require_relative 'spec_helper'
 require_relative '../lib/distributed-lock-google-cloud-storage/lock'
 
 RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
   DEFAULT_TIMEOUT = 15
-  LOCK_PATH = 'ruby-lock'
+  LOCK_PATH = "ruby-lock.#{SecureRandom.hex(16)}.#{Process.pid}"
 
   around(:each) do |ex|
     ex.run_with_retry retry: 3
@@ -119,6 +120,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
 
       @lock2 = create(backoff_min: 0.05, backoff_max: 0.05, logger: logger2)
       @thread = Thread.new do
+        Thread.current.report_on_exception = false
         @lock2.lock(timeout: DEFAULT_TIMEOUT)
         Thread.current[:result] = {
           locked_according_to_internal_state: @lock2.locked_according_to_internal_state?,

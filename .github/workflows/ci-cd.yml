@@ -34,6 +34,11 @@ jobs:
         with:
           ruby-version: '2.7'
 
+      - name: Fetch Google Cloud credentials
+        run: echo "$CREDENTIALS" > credentials.json
+        env:
+          CREDENTIALS: ${{ secrets.TEST_GCLOUD_CREDENTIALS }}
+
       - uses: actions/cache@v1
         with:
           path: vendor/bundle
@@ -53,6 +58,9 @@ jobs:
           bundle clean
 
       - run: bundle exec rspec
+        env:
+          TEST_GCLOUD_BUCKET: ${{ secrets.TEST_GCLOUD_BUCKET }}
+          TEST_GCLOUD_CREDENTIALS_PATH: credentials.json
 
       - run: mkdir defs
       - run: bundle exec sord defs/defs.rbi
@@ -71,6 +79,7 @@ jobs:
       - editorconfig
       - build-and-test
     runs-on: ubuntu-20.04
+    environment: rubygems.org
     steps:
       - uses: actions/checkout@v2
 
