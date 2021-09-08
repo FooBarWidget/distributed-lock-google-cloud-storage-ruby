@@ -48,7 +48,7 @@ gem 'distributed-lock-google-cloud-storage'
 
 Initialize a Lock instance. It must be backed by a Google Cloud Storage bucket and object. Then do your work within a `#synchronize` block.
 
-**Important:** If your work is a long-running operation, then also be sure to call `#check_health!` _periodically_ to check whether the lock is still healthy. This call throws an exception if it's not healthy. Learn more in section "Lock health check".
+**Important:** If your work is a long-running operation, then also be sure to call `#check_health!` _periodically_ to check whether the lock is still healthy. This call throws an exception if it's not healthy. Learn more in [Long-running operations, lock refreshing and lock health checking](#long-running-operations-lock-refreshing-and-lock-health-checking).
 
 ~~~ruby
 require 'distributed-lock-google-cloud-storage'
@@ -85,3 +85,72 @@ DistributedLock::GoogleCloudStorage::Lock(
  * A String: a path to a keyfile.
  * A Hash: the contents of a keyfile.
  * A `Google::Auth::Credentials` object.
+
+## Auto-recovery from stale locks
+
+A lock is considered taken only if there's a corresponding object in Cloud Storage. Releasing the lock means deleting the object. A client could sometimes fail to delete the object — for example because of a crash, a freeze or a network problem. We automatically recover from this situation by putting a **time-to-live** (TTL) value on the object. If the object is older than its TTL value, then we consider the lock to be _stale_, and we'll automatically clean it up next time a client tries to obtain the lock.
+
+The TTL value is configurable via the `ttl` parameter in the constructor. A lower TTL value allows faster recovery from stale locks, but has a higher risk of incorrectly detecting lock staleness. For example: maybe the original owner of the lock was only temporarily frozen because it lacked CPU time.
+
+So the TTL should be generous, in the order of minutes. The default is 5 minutes.
+
+## Long-running operations, lock refreshing and lock health checking
+
+If you perform an operation inside the lock that *might* take longer than the TTL, then we call that a _long-running operation_. Performing such long-running operations is safe: you generally don't have to worry about the lock become stale during the operation. But you need to be aware of caveats.
+
+We support long-running operations by _refreshing_ the lock's timestamp once in a while so that the lock does not become stale. This refreshing happens automatically in a background thread. It happens. The behavior of this refreshing operation is configurable through the `refresh_interval` and `max_refresh_fails` parameters in the constructor.
+
+Refreshing _could_ fail, for example because of a network delays, or because some other client _still_ concluded that the lock is stale and took over ownership of the lock, or because something else unexpected happened to the object. If refreshing fails too many times consecutively, then we declare the lock as _unhealthy_.
+
+Declaring unhealthiness is an asynchronous event, and does not directly affect your code's flow. We won't abort your code or force it to raise an exception. Instead, your code should periodically check whether the lock has been declared unhealthy. Once you detect it, you must **immediately abort work**, because another client could have taken over the lock's ownership by now.
+
+> Aborting work is easier said than done, and comes with its own caveats. You should therefore read [this discussion](https://www.joyfulbikeshedding.com/blog/2021-05-19-robust-distributed-locking-algorithm-based-on-google-cloud-storage.html#dealing-with-inconsistent-operation-states).
+
+There are two ways to check whether the lock is still healthy:
+
+ * By calling `#check_health!`, which might throw a `DistributedLock::GoogleCloudStorage::LockUnhealthyError`.
+ * By calling `#healthy?`, which returns a boolean.
+
+Both methods are cheap, and internally only check for a flag. So it's fine to call these methods inside hot loops.
+
+## Instant recovery from stale locks
+
+Instant recovery works as follows: if a client A crashes (and fails to release the lock) and restarts, and in the mean time the lock hasn't been taken by another client B, then client A should be able to instantly retake onwership of the lock.
+
+Instant recovery is distinct from the normal TTL-based auto-recovery mechanism. Instant recovery doesn't have to wait for the TTL to expire, nor does it come with the risk of incorrectly detecting the lock as stale. However, the situations in way instant recovery can be applied, is more limited.
+
+### How instant recovery works: instance identities
+
+Instant recovery works through the use of _instance identities_. The instance identity is what the locking algorithm uses to uniquely identify clients.
+
+The identity is unique on a per-thread basis, which makes the lock thread-safe. It also means that in order for instant recovery to work, the same thread that crashed (and failed to release the lock) has to restart its operation and attempt to obtain the lock again.
+
+## Logging
+
+By default, we log info, warning and error messages to stderr. If you want logs to be handled differently, then set the `logger` parameter in the constructor. For example, to only log warnings and errors:
+
+~~~ruby
+logger = Logger.new($stderr)
+logger.level = Logger::WARN
+
+DistributedLock::GoogleCloudStorage::Lock(
+  bucket_name: 'your bucket name',
+  path: 'locks/mywork',
+  logger: logger,
+)
+~~~
+
+## Troubleshooting
+
+Do you have a problem with the lock and do you want to know why? Then enable debug logging. For example:
+
+~~~ruby
+logger = Logger.new($stderr)
+logger.level = Logger::DEBUG
+
+DistributedLock::GoogleCloudStorage::Lock(
+  bucket_name: 'your bucket name',
+  path: 'locks/mywork',
+  logger: logger,
+)
+~~~

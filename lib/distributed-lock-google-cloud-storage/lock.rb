@@ -11,18 +11,20 @@ require_relative 'utils'
 module DistributedLock
   module GoogleCloudStorage
     class Lock
-      DEFAULT_INSTANCE_IDENTITY_PREFIX = SecureRandom.hex(12).freeze
+      DEFAULT_INSTANCE_IDENTITY_PREFIX_WITHOUT_PID = SecureRandom.hex(12).freeze
 
       include Utils
 
 
-      # Generates a sane default instance identity string. The result is identical across multiple calls
+      # Generates a sane default instance identity prefix string. The result is identical across multiple calls
       # in the same process. It supports forking, so that calling this method in a forked child process
       # automatically returns a different value than when called from the parent process.
       #
+      # The result doesn't include a thread identitier, which is why we call this a prefix.
+      #
       # @return [String]
-      def self.default_instance_identity
-        "#{DEFAULT_INSTANCE_IDENTITY_PREFIX}-#{Process.pid}"
+      def self.default_instance_identity_prefix
+        "#{DEFAULT_INSTANCE_IDENTITY_PREFIX_WITHOUT_PID}-#{Process.pid}"
       end
 
 
@@ -36,23 +38,25 @@ module DistributedLock
       # @param bucket_name [String] The name of a Cloud Storage bucket in which to place the lock.
       #   This bucket must already exist.
       # @param path [String] The object path within the bucket to use for locking.
-      # @param instance_identity [String] A unique identifier for this application instance, to be included in the
-      #   lock object's owner identity string. Learn more in the readme, section "Fast recovery from stale locks".
+      # @param instance_identity_prefix [String] A unique identifier for the client of this lock, excluding its thread
+      #   identity. Learn more in the readme, section "Instant recovery from stale locks".
       # @param thread_safe [Boolean] Whether this Lock instance should be thread-safe. When true, the thread's
-      #   identity will be included in the lock object's owner identity string, section "Thread-safety".
+      #   identity will be included in the instance identity.
       # @param logger A Logger-compatible object to log progress to. See also the note about thread-safety.
       # @param logger_mutex A Mutex to synchronize multithreaded writes to the logger.
       # @param ttl [Numeric] The lock is considered stale if it's age (in seconds) is older than this value.
-      #   This value should be generous, on the order of minutes.
+      #   This value should be generous, in the order of minutes.
       # @param refresh_interval [Numeric, nil]
       #   We'll refresh the lock's timestamp every `refresh_interval` seconds. This value should be many
-      #   times smaller than `stale_time`, so that we can detect an unhealthy lock long before it becomes stale.
+      #   times smaller than `ttl`, in order to account for network delays, temporary network errors,
+      #   and events that cause the lock to become unhealthy.
       #
       #   This value must be smaller than `ttl / max_refresh_fails`.
       #
-      #   Default: `stale_time / 8`
+      #   Default: `ttl / (max_refresh_fails * 3)`
       # @param max_refresh_fails [Integer]
-      #   The lock will be declared unhealthy if refreshing fails this many times consecutively.
+      #   The lock will be declared unhealthy if refreshing fails with a temporary error this many times consecutively.
+      #   If refreshing fails with a permanent error, then the lock is immediately declared unhealthy regardless of this value.
       # @param backoff_min [Numeric] Minimum amount of time, in seconds, to back off when
       #   waiting for a lock to become available. Must be at least 0.
       # @param backoff_max [Numeric] Maximum amount of time, in seconds, to back off when
@@ -74,7 +78,7 @@ module DistributedLock
       #   this `Lock` instance must be synchronized through `logger_mutex`. This is because the logger will be
       #   written to by a background thread.
       # @raise [ArgumentError] When an invalid argument is detected.
-      def initialize(bucket_name:, path:, instance_identity: self.class.default_instance_identity,
+      def initialize(bucket_name:, path:, instance_identity_prefix: self.class.default_instance_identity_prefix,
         thread_safe: true, logger: Logger.new($stderr), logger_mutex: Mutex.new,
         ttl: DEFAULT_TTL, refresh_interval: nil, max_refresh_fails: DEFAULT_MAX_REFRESH_FAILS,
         backoff_min: DEFAULT_BACKOFF_MIN, backoff_max: DEFAULT_BACKOFF_MAX,
@@ -91,12 +95,12 @@ module DistributedLock
 
         @bucket_name = bucket_name
         @path = path
-        @instance_identity = instance_identity
+        @instance_identity_prefix = instance_identity_prefix
         @thread_safe = thread_safe
         @logger = logger
         @logger_mutex = logger_mutex
         @ttl = ttl
-        @refresh_interval = refresh_interval || ttl * DEFAULT_TTL_REFRESH_INTERVAL_DIVIDER
+        @refresh_interval = refresh_interval || ttl.to_f / (max_refresh_fails * 3)
         @max_refresh_fails = max_refresh_fails
         @backoff_min = backoff_min
         @backoff_max = backoff_max
@@ -164,7 +168,7 @@ module DistributedLock
       end
 
       # Obtains the lock. If the lock is stale, resets it automatically. If the lock is already
-      # obtained by some other app identity or some other thread, waits until it becomes available,
+      # obtained by some other instance identity, waits until it becomes available,
       # or until timeout.
       #
       # @param timeout [Numeric] The timeout in seconds.
@@ -249,7 +253,7 @@ module DistributedLock
       # Obtains the lock, runs the block, and releases the lock when the block completes.
       #
       # If the lock is stale, resets it automatically. If the lock is already
-      # obtained by some other app identity or some other thread, waits until it becomes available,
+      # obtained by some other instance identity, waits until it becomes available,
       # or until timeout.
       #
       # Accepts the same parameters as #lock.
@@ -287,10 +291,11 @@ module DistributedLock
         end
 
         if thread
+          log_debug { "Abandoning locked lock" }
           thread.join
-          log_debug { "Abandoned locked lock. refresher_generation=#{refresher_generation}" }
+          log_debug { "Done abandoned locked lock. refresher_generation=#{refresher_generation}" }
         else
-          log_debug { "Abandoned unlocked lock" }
+          log_debug { "Abandoning unlocked lock" }
         end
       end
 
@@ -385,7 +390,7 @@ module DistributedLock
 
       # @return [String]
       def identity
-        result = @instance_identity
+        result = @instance_identity_prefix
         result = "#{result}/thr-#{Thread.current.object_id.to_s(36)}" if @thread_safe
         result
       end

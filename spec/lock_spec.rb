@@ -29,7 +29,8 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     DistributedLock::GoogleCloudStorage::Lock.new(
       bucket_name: require_envvar('TEST_GCLOUD_BUCKET'),
       path: LOCK_PATH,
-      logger: Logger.new(log_output),
+      logger: logger,
+      logger_mutex: logger_mutex,
       cloud_storage_options: {
         credentials: require_envvar('TEST_GCLOUD_CREDENTIALS_PATH'),
       },
@@ -54,6 +55,9 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
   end
 
 
+  let(:logger_mutex) { Mutex.new }
+  let(:logger) { Logger.new(log_output) }
+  let(:logger2) { Logger.new(log_output2) }
   let(:log_output) { StringIO.new }
   let(:log_output2) { StringIO.new }
 
@@ -113,7 +117,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       @lock = create
       @lock.lock(timeout: 0)
 
-      @lock2 = create(backoff_min: 0.05, backoff_max: 0.05, logger: Logger.new(log_output2))
+      @lock2 = create(backoff_min: 0.05, backoff_max: 0.05, logger: logger2)
       @thread = Thread.new do
         @lock2.lock(timeout: DEFAULT_TIMEOUT)
         Thread.current[:result] = {
@@ -200,8 +204,8 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect { @lock.check_health! }.not_to raise_error
     end
 
-    it 'succeeds if the lock was previously abandoned by the same instance and thread' do
-      @lock = create(instance_identity: 'foo', thread_safe: false)
+    it 'succeeds if the lock was previously abandoned by the same instance identity' do
+      @lock = create(instance_identity_prefix: 'foo', thread_safe: false)
       force_recreate_lock_object(metadata: { identity: 'foo' })
 
       expect(@lock).to receive(:create_lock_object).exactly(2).times.and_call_original
@@ -348,7 +352,10 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_healthy
       expect { @lock.check_health! }.not_to raise_error
 
+      logger_mutex.synchronize { logger.debug 'Begin erasing lock object' }
       force_erase_lock_object
+      logger_mutex.synchronize { logger.debug 'End erasing lock object' }
+
       eventually(timeout: 5) do
         !@lock.healthy?
       end
