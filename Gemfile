@@ -2,9 +2,7 @@
 
 source 'https://rubygems.org'
 
-#gemspec!
-
-gem 'google-cloud-storage'
+gemspec
 
 group :development do
   gem 'pry'

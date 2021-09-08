@@ -66,7 +66,7 @@ lock.synchronize do
 end
 ~~~
 
-## Google Cloud authentication
+### Google Cloud authentication
 
 We use [Application Default Credentials](https://cloud.google.com/docs/authentication/production#automatically) by default. If you don't want that, then pass a `cloud_storage_options` argument to the constructor, in which you set the `credentials` option.
 
@@ -75,7 +75,7 @@ DistributedLock::GoogleCloudStorage::Lock(
   bucket_name: 'your bucket name',
   path: 'locks/mywork',
   cloud_storage_options: {
-  	credentials: '/path/to/keyfile.json'
+    credentials: '/path/to/keyfile.json'
   }
 )
 ~~~
@@ -86,7 +86,7 @@ DistributedLock::GoogleCloudStorage::Lock(
  * A Hash: the contents of a keyfile.
  * A `Google::Auth::Credentials` object.
 
-## Auto-recovery from stale locks
+### Auto-recovery from stale locks
 
 A lock is considered taken only if there's a corresponding object in Cloud Storage. Releasing the lock means deleting the object. A client could sometimes fail to delete the object — for example because of a crash, a freeze or a network problem. We automatically recover from this situation by putting a **time-to-live** (TTL) value on the object. If the object is older than its TTL value, then we consider the lock to be _stale_, and we'll automatically clean it up next time a client tries to obtain the lock.
 
@@ -94,7 +94,7 @@ The TTL value is configurable via the `ttl` parameter in the constructor. A lowe
 
 So the TTL should be generous, in the order of minutes. The default is 5 minutes.
 
-## Long-running operations, lock refreshing and lock health checking
+### Long-running operations, lock refreshing and lock health checking
 
 If you perform an operation inside the lock that *might* take longer than the TTL, then we call that a _long-running operation_. Performing such long-running operations is safe: you generally don't have to worry about the lock become stale during the operation. But you need to be aware of caveats.
 
@@ -113,19 +113,19 @@ There are two ways to check whether the lock is still healthy:
 
 Both methods are cheap, and internally only check for a flag. So it's fine to call these methods inside hot loops.
 
-## Instant recovery from stale locks
+### Instant recovery from stale locks
 
 Instant recovery works as follows: if a client A crashes (and fails to release the lock) and restarts, and in the mean time the lock hasn't been taken by another client B, then client A should be able to instantly retake onwership of the lock.
 
 Instant recovery is distinct from the normal TTL-based auto-recovery mechanism. Instant recovery doesn't have to wait for the TTL to expire, nor does it come with the risk of incorrectly detecting the lock as stale. However, the situations in way instant recovery can be applied, is more limited.
 
-### How instant recovery works: instance identities
+#### How instant recovery works: instance identities
 
 Instant recovery works through the use of _instance identities_. The instance identity is what the locking algorithm uses to uniquely identify clients.
 
 The identity is unique on a per-thread basis, which makes the lock thread-safe. It also means that in order for instant recovery to work, the same thread that crashed (and failed to release the lock) has to restart its operation and attempt to obtain the lock again.
 
-## Logging
+### Logging
 
 By default, we log info, warning and error messages to stderr. If you want logs to be handled differently, then set the `logger` parameter in the constructor. For example, to only log warnings and errors:
 
@@ -140,7 +140,7 @@ DistributedLock::GoogleCloudStorage::Lock(
 )
 ~~~
 
-## Troubleshooting
+### Troubleshooting
 
 Do you have a problem with the lock and do you want to know why? Then enable debug logging. For example:
 

@@ -3,4 +3,6 @@
 .yardoc
 .byebug_history
 .env
-local
+*.gem
+/doc
+/local

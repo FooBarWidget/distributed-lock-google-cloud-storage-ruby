@@ -13,6 +13,10 @@ insert_final_newline = true
 indent_style = space
 indent_size = 2
 
+[*.gemspec]
+indent_style = space
+indent_size = 2
+
 [Gemfile]
 indent_style = space
 indent_size = 2

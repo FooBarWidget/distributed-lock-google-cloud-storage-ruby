@@ -1,0 +1,127 @@
+name: CI/CD
+
+on:
+  push: {}
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a release? Set to true'
+        required: true
+
+jobs:
+  editorconfig:
+    name: Check EditorConfig
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Download editorconfig-checker
+        run: curl -O -L -C - https://github.com/editorconfig-checker/editorconfig-checker/releases/download/2.3.5/ec-linux-amd64.tar.gz
+
+      - name: Extract editorconfig-checker
+        run: tar xzf ec-linux-amd64.tar.gz
+
+      - name: Check EditorConfig compliance
+        run: ./bin/ec-linux-amd64
+
+
+  build-and-test:
+    name: Build & test
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-ruby@v1
+        with:
+          ruby-version: '2.7'
+
+      - uses: actions/cache@v1
+        with:
+          path: vendor/bundle
+          key: ${{ runner.os }}-gems-${{ hashFiles('Gemfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-gems-
+
+
+      - name: Install Bundler 2
+        run: gem install bundler -v '~> 2.1' --no-document
+
+      - name: Bundle install
+        run: |
+          set -x
+          bundle config set path vendor/bundle
+          bundle install --jobs 4 --retry 3 --frozen --without=development
+          bundle clean
+
+      - run: bundle exec rspec
+
+      - run: mkdir defs
+      - run: bundle exec sord defs/defs.rbi
+
+      - run: gem build distributed-lock-google-cloud-storage.gemspec
+
+      - uses: actions/upload-artifact@v2
+        with:
+          name: gem
+          path: '*.gem'
+
+
+  publish:
+    needs:
+      - editorconfig
+      - build-and-test
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: actions/setup-ruby@v1
+        with:
+          ruby-version: '2.7'
+
+      - uses: actions/download-artifact@v2
+        with:
+          name: gem
+          path: .
+
+      - name: Determine version
+        id: determine_version
+        run: |
+          VERSION=$(ruby -r./lib/distributed-lock-google-cloud-storage/version -e 'puts DistributedLock::GoogleCloudStorage::Version::VERSION_STRING')
+          echo "::set-output name=version::$VERSION"
+
+      - name: Determine changelog
+        run: |
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          echo "Merge base: $MERGE_BASE"
+
+          if PREVIOUS_RELEASE_TAG=$(git describe "$MERGE_BASE" --tags --abbrev=0 --match='v*' 2>/dev/null); then
+            echo "Previous release: $PREVIOUS_RELEASE_TAG"
+            git log --pretty='format:%s' "$PREVIOUS_RELEASE_TAG..HEAD" | sed -E 's|(.*)| * \1|' > changelog.txt
+          else
+            echo "No previous release found"
+            git log --pretty='format:%s' | sed -E 's|(.*)| * \1|' > changelog.txt
+          fi
+
+          echo
+          echo "## Changelog"
+          cat changelog.txt
+
+      - name: Create tag
+        if: github.event.inputs.create_release == 'true'
+        run: |
+          set -x
+          git tag "v${PRODUCT_VERSION}"
+          git push origin "v${PRODUCT_VERSION}"
+        env:
+          PRODUCT_VERSION: ${{ steps.determine_version.outputs.version }}
+
+      - name: Create draft release
+        if: github.event.inputs.create_release == 'true'
+        run: gh release create "v${PRODUCT_VERSION}" --draft --notes-file changelog.txt --title "Version $PRODUCT_VERSION"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRODUCT_VERSION: ${{ steps.determine_version.outputs.version }}
+
+      - name: Release gem
+        if: github.event.inputs.create_release == 'true'
+        uses: dawidd6/action-publish-gem@c4713bf1595e0686322d6cf6c1a1c0dcaeca55de
+        with:
+          api_key: ${{ secrets.RUBYGEMS_API_KEY }}
