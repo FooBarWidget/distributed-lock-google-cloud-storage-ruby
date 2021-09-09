@@ -19,5 +19,5 @@ bundle exec rspec
 
  1. Bump the version number in `version.rb`.
  2. Ensure [the CI](https://github.com/FooBarWidget/distributed-lock-google-cloud-storage-ruby/actions) is successful.
- 3. [Manually run the "CI/CD" workflow](https://github.com/FooBarWidget/distributed-lock-google-cloud-storage-ruby/actions/workflows/ci-cd.yml). Set the `create_release` parameter to `true`. Wait until it finishes. This creates a draft release.
+ 3. [Manually run the "CI/CD" workflow](https://github.com/FooBarWidget/distributed-lock-google-cloud-storage-ruby/actions/workflows/ci-cd.yml). Set the `create_release` and `push_gem` both to `true`. Wait until it finishes. This creates a draft release.
  4. Edit [the draft release](https://github.com/FooBarWidget/distributed-lock-google-cloud-storage-ruby/releases)'s notes and finalize the release.

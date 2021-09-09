@@ -9,6 +9,9 @@ on:
       create_release:
         description: 'Create a release? Set to true'
         required: true
+      push_gem:
+        description: 'Push gem? Set to true'
+        required: true
 
 jobs:
   editorconfig:
@@ -135,8 +138,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRODUCT_VERSION: ${{ steps.determine_version.outputs.version }}
 
-      - name: Release gem
+      - name: Upload release assets
         if: github.event.inputs.create_release == 'true'
+        run: gh release upload --clobber "v${PRODUCT_VERSION}" *.gem
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRODUCT_VERSION: ${{ steps.determine_version.outputs.version }}
+
+      - name: Push gem
+        if: github.event.inputs.push_gem == 'true'
         uses: dawidd6/action-publish-gem@c4713bf1595e0686322d6cf6c1a1c0dcaeca55de
         with:
           api_key: ${{ secrets.RUBYGEMS_API_KEY }}
