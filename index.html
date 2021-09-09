@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>
+  File: README
+  
+    &mdash; Documentation by YARD 0.9.26
+  
+</title>
+
+  <link rel="stylesheet" href="css/style.css" type="text/css" />
+
+  <link rel="stylesheet" href="css/common.css" type="text/css" />
+
+<script type="text/javascript">
+  pathId = "README";
+  relpath = '';
+</script>
+
+
+  <script type="text/javascript" charset="utf-8" src="js/jquery.js"></script>
+
+  <script type="text/javascript" charset="utf-8" src="js/app.js"></script>
+
+
+  </head>
+  <body>
+    <div class="nav_wrap">
+      <iframe id="nav" src="class_list.html?1"></iframe>
+      <div id="resizer"></div>
+    </div>
+
+    <div id="main" tabindex="-1">
+      <div id="header">
+        <div id="menu">
+  
+    <a href="_index.html">Index</a> &raquo; 
+    <span class="title">File: README</span>
+  
+</div>
+
+        <div id="search">
+  
+    <a class="full_list_link" id="class_list_link"
+        href="class_list.html">
+
+        <svg width="24" height="24">
+          <rect x="0" y="4" width="24" height="4" rx="1" ry="1"></rect>
+          <rect x="0" y="12" width="24" height="4" rx="1" ry="1"></rect>
+          <rect x="0" y="20" width="24" height="4" rx="1" ry="1"></rect>
+        </svg>
+    </a>
+  
+</div>
+        <div class="clear"></div>
+      </div>
+
+      <div id="content"><div id='filecontents'><h1 id="distributed-lock-based-on-google-cloud-storage">Distributed lock based on Google Cloud Storage</h1>
+
+<h2 id="introduction">Introduction</h2>
+
+<p>This is a Ruby implementation of a <a href="https://www.joyfulbikeshedding.com/blog/2021-05-19-robust-distributed-locking-algorithm-based-on-google-cloud-storage.html">distributed locking algorithm based on Google Cloud Storage</a>. This means the algorithm uses Google Cloud Storage to coordinate concurrency and to store shared state.</p>
+
+<h3 id="whats-this-for">What&#39;s this for?</h3>
+
+<p>A distributed lock is like a regular Mutex, but works across processes and machines. It&#39;s useful for making distributed (multi-machine) workloads concurrency-safe.</p>
+
+<p>One concrete use case in CI/CD pipelines. For example, <a href="https://fullstaqruby.org">Fullstaq Ruby&#39;s</a> CI/CD pipeline <a href="https://github.com/fullstaq-labs/fullstaq-ruby-server-edition/blob/main/dev-handbook/apt-yum-repo.md">builds and publishes APT/YUM packages to shared storage</a>. Because multiple CI runs can be active concurrently, I needed something to ensure that they don&#39;t corrupt each others&#39; work by writing to the same shared storage concurrently.</p>
+
+<p>There are many ways to manage concurrency. Work queues is a popular method. But in Fullstaq Ruby&#39;s case, that requires setting up additional infrastructure and/or complicating CI/CD code. I deemed using a distributed lock to be the simplest solution.</p>
+
+<h3 id="when-to-use">When to use</h3>
+
+<p>This distributed lock is <strong>high-latency</strong>. A locking operation&#39;s average speed is in the order of hundreds of milliseconds. In the worst case (when the algorithm detects that a client left without releasing the lock), it could take several tens of seconds to several minutes to obtain a lock, depending on the specific timing settings. Use this lock only if your workload can tolerate such a latency.</p>
+
+<h3 id="reliability">Reliability</h3>
+
+<p>TLDR: it&#39;s pretty reliable.</p>
+
+<p>We use Google Cloud Storage for storing shared locking state and for coordinating concurrency primitives. Thus, our reliability depends partially on Google Cloud Storage&#39;s own availability. Google Cloud Storage&#39;s availability reputation is pretty good.</p>
+
+<p>The algorithm is designed to automatically recover from any error condition (besides Google Cloud Storage availability) that I could think of. Thus, this distributed lock is <strong>low-maintenance</strong>: things should just work. Just keep in mind that auto-recovery could take several minutes depending on the specific timing settings.</p>
+
+<p>The most important error condition is that clients of the lock could leave unexpectedly (e.g. a crash), without explicitly releasing the lock. Many other implementations don&#39;t handle this situation well: they freeze up, requiring an administrator to manually release the lock. We recover automatically from this situation. See also <a href="https://www.joyfulbikeshedding.com/blog/2021-05-19-robust-distributed-locking-algorithm-based-on-google-cloud-storage.html">how I designed this algorithm</a>.</p>
+
+<h3 id="comparisons-with-alternatives">Comparisons with alternatives</h3>
+
+<p>Other distributed locks based on Google Cloud Storage include:</p>
+
+<ul>
+<li><a href="https://github.com/mco-gh/gcslock">gcslock</a></li>
+<li><a href="https://github.com/thinkingmachines/gcs-mutex-lock">gcs-mutex-lock</a></li>
+<li><a href="https://github.com/XaF/gcslock-ruby">gcslock-ruby</a></li>
+</ul>
+
+<p>In designing my own algorithm, I&#39;ve carefully examined the above alternatives (and more). They all have various issues, including being prone to crashes, utilizing unbounded backoff, being prone to unintended lock releases due to networking issues, and more. My algorithm addresses all issues not addressed by the above alternatives. Please read <a href="https://www.joyfulbikeshedding.com/blog/2021-05-19-robust-distributed-locking-algorithm-based-on-google-cloud-storage.html">the algorithm design</a> to learn more.</p>
+
+<h2 id="installation">Installation</h2>
+
+<p>Add to your Gemfile:</p>
+
+<pre class="code Gemfile"><code class="Gemfile">gem &#39;distributed-lock-google-cloud-storage&#39;
+</code></pre>
+
+<h2 id="usage">Usage</h2>
+
+<p>Initialize a Lock instance. It must be backed by a Google Cloud Storage bucket and object. Then do your work within a <code>#synchronize</code> block.</p>
+
+<p><strong>Important:</strong> If your work is a long-running operation, then also be sure to call <code>#check_health!</code> <em>periodically</em> to check whether the lock is still healthy. This call throws an exception if it&#39;s not healthy. Learn more in <a href="#long-running-operations-lock-refreshing-and-lock-health-checking">Long-running operations, lock refreshing and lock health checking</a>.</p>
+
+<pre class="code ruby"><code class="ruby"><span class='id identifier rubyid_require'>require</span> <span class='tstring'><span class='tstring_beg'>&#39;</span><span class='tstring_content'>distributed-lock-google-cloud-storage</span><span class='tstring_end'>&#39;</span></span>
+
+<span class='id identifier rubyid_lock'>lock</span> <span class='op'>=</span> <span class='const'><span class='object_link'><a href="DistributedLock.html" title="DistributedLock (module)">DistributedLock</a></span></span><span class='op'>::</span><span class='const'><span class='object_link'><a href="DistributedLock/GoogleCloudStorage.html" title="DistributedLock::GoogleCloudStorage (module)">GoogleCloudStorage</a></span></span><span class='op'>::</span><span class='const'><span class='object_link'><a href="DistributedLock/GoogleCloudStorage/Lock.html" title="DistributedLock::GoogleCloudStorage::Lock (class)">Lock</a></span></span><span class='lparen'>(</span>
+  <span class='label'>bucket_name:</span> <span class='tstring'><span class='tstring_beg'>&#39;</span><span class='tstring_content'>your bucket name</span><span class='tstring_end'>&#39;</span></span><span class='comma'>,</span>
+  <span class='label'>path:</span> <span class='tstring'><span class='tstring_beg'>&#39;</span><span class='tstring_content'>locks/mywork</span><span class='tstring_end'>&#39;</span></span><span class='rparen'>)</span>
+<span class='id identifier rubyid_lock'>lock</span><span class='period'>.</span><span class='id identifier rubyid_synchronize'>synchronize</span> <span class='kw'>do</span>
+  <span class='id identifier rubyid_do_some_work'>do_some_work</span>
+
+  <span class='comment'># IMPORTANT: _periodically_ call this!
+</span>  <span class='id identifier rubyid_lock'>lock</span><span class='period'>.</span><span class='id identifier rubyid_check_health!'>check_health!</span>
+
+  <span class='id identifier rubyid_do_more_work'>do_more_work</span>
+<span class='kw'>end</span>
+</code></pre>
+
+<h3 id="google-cloud-authentication">Google Cloud authentication</h3>
+
+<p>We use <a href="https://cloud.google.com/docs/authentication/production#automatically">Application Default Credentials</a> by default. If you don&#39;t want that, then pass a <code>cloud_storage_options</code> argument to the constructor, in which you set the <code>credentials</code> option.</p>
+
+<pre class="code ruby"><code class="ruby"><span class='const'><span class='object_link'><a href="DistributedLock.html" title="DistributedLock (module)">DistributedLock</a></span></span><span class='op'>::</span><span class='const'><span class='object_link'><a href="DistributedLock/GoogleCloudStorage.html" title="DistributedLock::GoogleCloudStorage (module)">GoogleCloudStorage</a></span></span><span class='op'>::</span><span class='const'><span class='object_link'><a href="DistributedLock/GoogleCloudStorage/Lock.html" title="DistributedLock::GoogleCloudStorage::Lock (class)">Lock</a></span></span><span class='lparen'>(</span>
+  <span class='label'>bucket_name:</span> <span class='tstring'><span class='tstring_beg'>&#39;</span><span class='tstring_content'>your bucket name</span><span class='tstring_end'>&#39;</span></span><span class='comma'>,</span>
+  <span class='label'>path:</span> <span class='tstring'><span class='tstring_beg'>&#39;</span><span class='tstring_content'>locks/mywork</span><span class='tstring_end'>&#39;</span></span><span class='comma'>,</span>
+  <span class='label'>cloud_storage_options:</span> <span class='lbrace'>{</span>
+    <span class='label'>credentials:</span> <span class='tstring'><span class='tstring_beg'>&#39;</span><span class='tstring_content'>/path/to/keyfile.json</span><span class='tstring_end'>&#39;</span></span>
+  <span class='rbrace'>}</span>
+<span class='rparen'>)</span>
+</code></pre>
+
+<p><code>credentials</code> is anything accepted by <a href="https://googleapis.dev/ruby/google-cloud-storage/latest/Google/Cloud/Storage.html#new-class_method">Google::Cloud::Storage.new&#39;s <code>credentials</code> parameter</a>, which currently means it&#39;s one of these:</p>
+
+<ul>
+<li>A String: a path to a keyfile.</li>
+<li>A Hash: the contents of a keyfile.</li>
+<li>A <code>Google::Auth::Credentials</code> object.</li>
+</ul>
+
+<h3 id="auto-recovery-from-stale-locks">Auto-recovery from stale locks</h3>
+
+<p>A lock is considered taken only if there&#39;s a corresponding object in Cloud Storage. Releasing the lock means deleting the object. A client could sometimes fail to delete the object — for example because of a crash, a freeze or a network problem. We automatically recover from this situation by putting a <strong>time-to-live</strong> (TTL) value on the object. If the object is older than its TTL value, then we consider the lock to be <em>stale</em>, and we&#39;ll automatically clean it up next time a client tries to obtain the lock.</p>
+
+<p>The TTL value is configurable via the <code>ttl</code> parameter in the constructor. A lower TTL value allows faster recovery from stale locks, but has a higher risk of incorrectly detecting lock staleness. For example: maybe the original owner of the lock was only temporarily frozen because it lacked CPU time.</p>
+
+<p>So the TTL should be generous, in the order of minutes. The default is 5 minutes.</p>
+
+<h3 id="long-running-operations-lock-refreshing-and-lock-health-checking">Long-running operations, lock refreshing and lock health checking</h3>
+
+<p>If you perform an operation inside the lock that <em>might</em> take longer than the TTL, then we call that a <em>long-running operation</em>. Performing such long-running operations is safe: you generally don&#39;t have to worry about the lock become stale during the operation. But you need to be aware of caveats.</p>
+
+<p>We support long-running operations by <em>refreshing</em> the lock&#39;s timestamp once in a while so that the lock does not become stale. This refreshing happens automatically in a background thread. It happens. The behavior of this refreshing operation is configurable through the <code>refresh_interval</code> and <code>max_refresh_fails</code> parameters in the constructor.</p>
+
+<p>Refreshing <em>could</em> fail, for example because of a network delays, or because some other client <em>still</em> concluded that the lock is stale and took over ownership of the lock, or because something else unexpected happened to the object. If refreshing fails too many times consecutively, then we declare the lock as <em>unhealthy</em>.</p>
+
+<p>Declaring unhealthiness is an asynchronous event, and does not directly affect your code&#39;s flow. We won&#39;t abort your code or force it to raise an exception. Instead, your code should periodically check whether the lock has been declared unhealthy. Once you detect it, you must <strong>immediately abort work</strong>, because another client could have taken over the lock&#39;s ownership by now.</p>
+
+<blockquote>
+<p>Aborting work is easier said than done, and comes with its own caveats. You should therefore read <a href="https://www.joyfulbikeshedding.com/blog/2021-05-19-robust-distributed-locking-algorithm-based-on-google-cloud-storage.html#dealing-with-inconsistent-operation-states">this discussion</a>.</p>
+</blockquote>
+
+<p>There are two ways to check whether the lock is still healthy:</p>
+
+<ul>
+<li>By calling <code>#check_health!</code>, which might throw a <code>DistributedLock::GoogleCloudStorage::LockUnhealthyError</code>.</li>
+<li>By calling <code>#healthy?</code>, which returns a boolean.</li>
+</ul>
+
+<p>Both methods are cheap, and internally only check for a flag. So it&#39;s fine to call these methods inside hot loops.</p>
+
+<h3 id="instant-recovery-from-stale-locks">Instant recovery from stale locks</h3>
+
+<p>Instant recovery works as follows: if a client A crashes (and fails to release the lock) and restarts, and in the mean time the lock hasn&#39;t been taken by another client B, then client A should be able to instantly retake onwership of the lock.</p>
+
+<p>Instant recovery is distinct from the normal TTL-based auto-recovery mechanism. Instant recovery doesn&#39;t have to wait for the TTL to expire, nor does it come with the risk of incorrectly detecting the lock as stale. However, the situations in way instant recovery can be applied, is more limited.</p>
+
+<h4 id="how-instant-recovery-works-instance-identities">How instant recovery works: instance identities</h4>
+
+<p>Instant recovery works through the use of <em>instance identities</em>. The instance identity is what the locking algorithm uses to uniquely identify clients.</p>
+
+<p>The identity is unique on a per-thread basis, which makes the lock thread-safe. It also means that in order for instant recovery to work, the same thread that crashed (and failed to release the lock) has to restart its operation and attempt to obtain the lock again.</p>
+
+<h3 id="logging">Logging</h3>
+
+<p>By default, we log info, warning and error messages to stderr. If you want logs to be handled differently, then set the <code>logger</code> parameter in the constructor. For example, to only log warnings and errors:</p>
+
+<pre class="code ruby"><code class="ruby"><span class='id identifier rubyid_logger'>logger</span> <span class='op'>=</span> <span class='const'>Logger</span><span class='period'>.</span><span class='id identifier rubyid_new'>new</span><span class='lparen'>(</span><span class='gvar'>$stderr</span><span class='rparen'>)</span>
+<span class='id identifier rubyid_logger'>logger</span><span class='period'>.</span><span class='id identifier rubyid_level'>level</span> <span class='op'>=</span> <span class='const'>Logger</span><span class='op'>::</span><span class='const'>WARN</span>
+
+<span class='const'><span class='object_link'><a href="DistributedLock.html" title="DistributedLock (module)">DistributedLock</a></span></span><span class='op'>::</span><span class='const'><span class='object_link'><a href="DistributedLock/GoogleCloudStorage.html" title="DistributedLock::GoogleCloudStorage (module)">GoogleCloudStorage</a></span></span><span class='op'>::</span><span class='const'><span class='object_link'><a href="DistributedLock/GoogleCloudStorage/Lock.html" title="DistributedLock::GoogleCloudStorage::Lock (class)">Lock</a></span></span><span class='lparen'>(</span>
+  <span class='label'>bucket_name:</span> <span class='tstring'><span class='tstring_beg'>&#39;</span><span class='tstring_content'>your bucket name</span><span class='tstring_end'>&#39;</span></span><span class='comma'>,</span>
+  <span class='label'>path:</span> <span class='tstring'><span class='tstring_beg'>&#39;</span><span class='tstring_content'>locks/mywork</span><span class='tstring_end'>&#39;</span></span><span class='comma'>,</span>
+  <span class='label'>logger:</span> <span class='id identifier rubyid_logger'>logger</span><span class='comma'>,</span>
+<span class='rparen'>)</span>
+</code></pre>
+
+<h3 id="troubleshooting">Troubleshooting</h3>
+
+<p>Do you have a problem with the lock and do you want to know why? Then enable debug logging. For example:</p>
+
+<pre class="code ruby"><code class="ruby"><span class='id identifier rubyid_logger'>logger</span> <span class='op'>=</span> <span class='const'>Logger</span><span class='period'>.</span><span class='id identifier rubyid_new'>new</span><span class='lparen'>(</span><span class='gvar'>$stderr</span><span class='rparen'>)</span>
+<span class='id identifier rubyid_logger'>logger</span><span class='period'>.</span><span class='id identifier rubyid_level'>level</span> <span class='op'>=</span> <span class='const'>Logger</span><span class='op'>::</span><span class='const'>DEBUG</span>
+
+<span class='const'><span class='object_link'><a href="DistributedLock.html" title="DistributedLock (module)">DistributedLock</a></span></span><span class='op'>::</span><span class='const'><span class='object_link'><a href="DistributedLock/GoogleCloudStorage.html" title="DistributedLock::GoogleCloudStorage (module)">GoogleCloudStorage</a></span></span><span class='op'>::</span><span class='const'><span class='object_link'><a href="DistributedLock/GoogleCloudStorage/Lock.html" title="DistributedLock::GoogleCloudStorage::Lock (class)">Lock</a></span></span><span class='lparen'>(</span>
+  <span class='label'>bucket_name:</span> <span class='tstring'><span class='tstring_beg'>&#39;</span><span class='tstring_content'>your bucket name</span><span class='tstring_end'>&#39;</span></span><span class='comma'>,</span>
+  <span class='label'>path:</span> <span class='tstring'><span class='tstring_beg'>&#39;</span><span class='tstring_content'>locks/mywork</span><span class='tstring_end'>&#39;</span></span><span class='comma'>,</span>
+  <span class='label'>logger:</span> <span class='id identifier rubyid_logger'>logger</span><span class='comma'>,</span>
+<span class='rparen'>)</span>
+</code></pre>
+
+<h2 id="contributing">Contributing</h2>
+
+<p>Please read the <a href="CONTRIBUTING.md">Contribution guide</a>.</p>
+</div></div>
+
+      <div id="footer">
+  Generated on Thu Sep  9 19:12:16 2021 by
+  <a href="http://yardoc.org" title="Yay! A Ruby Documentation Tool" target="_parent">yard</a>
+  0.9.26 (ruby-2.7.4).
+</div>
+
+    </div>
+  </body>
+</html>
