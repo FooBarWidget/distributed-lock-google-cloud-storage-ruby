@@ -68,6 +68,8 @@ jobs:
           TEST_GCLOUD_BUCKET: ${{ secrets.TEST_GCLOUD_BUCKET }}
           TEST_GCLOUD_CREDENTIALS_PATH: credentials.json
 
+      - run: bundle exec yard
+
       - run: mkdir defs
       - run: bundle exec sord defs/defs.rbi
 
@@ -77,6 +79,11 @@ jobs:
         with:
           name: gem
           path: '*.gem'
+
+      - uses: actions/upload-artifact@v2
+        with:
+          name: api-docs
+          path: doc
 
 
   publish:
@@ -107,6 +114,11 @@ jobs:
         with:
           name: gem
           path: .
+
+      - uses: actions/download-artifact@v2
+        with:
+          name: api-docs
+          path: doc
 
       - name: Determine version
         id: determine_version
@@ -153,6 +165,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRODUCT_VERSION: ${{ steps.determine_version.outputs.version }}
+
+      - name: Publish API docs
+        if: github.event.inputs.create_release == 'true'
+        uses: JamesIves/github-pages-deploy-action@0f24da7de3e7e135102609a4c9633b025be8411b
+        with:
+          branch: gh-pages
+          folder: doc
 
       - name: Push gem
         if: github.event.inputs.push_gem == 'true'
