@@ -1,7 +1,9 @@
 name: CI/CD
 
 on:
-  push: {}
+  push:
+    paths-ignore:
+      - '*.md'
   workflow_dispatch:
     inputs:
       create_release:
