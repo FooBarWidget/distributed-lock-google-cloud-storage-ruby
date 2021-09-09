@@ -59,7 +59,8 @@ jobs:
         run: |
           set -x
           bundle config set path vendor/bundle
-          bundle install --jobs 4 --retry 3 --frozen --without=development
+          bundle config set frozen true
+          bundle install --jobs 4 --retry 3 --without=development
           bundle clean
 
       - run: bundle exec rspec
