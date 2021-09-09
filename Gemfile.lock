@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    distributed-lock-google-cloud-storage (1.0.0)
+    distributed-lock-google-cloud-storage (1.0.1)
       google-cloud-storage (~> 1.32)
 
 GEM
