@@ -154,3 +154,7 @@ DistributedLock::GoogleCloudStorage::Lock(
   logger: logger,
 )
 ~~~
+
+## Contributing
+
+Please read the [Contribution guide](CONTRIBUTING.md).
