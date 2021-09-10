@@ -63,15 +63,17 @@ jobs:
           bundle install --jobs 4 --retry 3 --without=development
           bundle clean
 
-      - run: bundle exec rspec
+      - name: Run RSpec
+        run: bundle exec rspec
         env:
           TEST_GCLOUD_BUCKET: ${{ secrets.TEST_GCLOUD_BUCKET }}
           TEST_GCLOUD_CREDENTIALS_PATH: credentials.json
 
-      - run: bundle exec yard
+      - name: Generate Yard API docs
+        run: bundle exec yard && touch doc/.nojekyll
 
-      - run: mkdir defs
-      - run: bundle exec sord defs/defs.rbi
+      - name: Generate Sorbet type definitions
+        run: mkdir defs && bundle exec sord defs/defs.rbi
 
       - run: gem build distributed-lock-google-cloud-storage.gemspec
 
