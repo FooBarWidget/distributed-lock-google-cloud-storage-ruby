@@ -11,6 +11,7 @@ require_relative 'utils'
 module DistributedLock
   module GoogleCloudStorage
     class Lock
+      # @!visibility private
       DEFAULT_INSTANCE_IDENTITY_PREFIX_WITHOUT_PID = SecureRandom.hex(12).freeze
 
       include Utils
@@ -65,13 +66,13 @@ module DistributedLock
       #   when acquiring the lock fails. Must be at least 0.
       # @param object_acl [String, nil] A predefined set of access control to apply to the Cloud Storage
       #   object. See the `acl` parameter in
-      #   [https://googleapis.dev/ruby/google-cloud-storage/latest/Google/Cloud/Storage/Bucket.html#create_file-instance_method](Google::Cloud::Storage::Bucket#create_file)
+      #   [Google::Cloud::Storage::Bucket#create_file](https://googleapis.dev/ruby/google-cloud-storage/latest/Google/Cloud/Storage/Bucket.html#create_file-instance_method)
       #   for acceptable values.
       # @param cloud_storage_options [Hash, nil] Additional options to pass to
-      #   {https://googleapis.dev/ruby/google-cloud-storage/latest/Google/Cloud/Storage.html#new-class_method Google::Cloud::Storage.new}.
+      #   [Google::Cloud::Storage.new](https://googleapis.dev/ruby/google-cloud-storage/latest/Google/Cloud/Storage.html#new-class_method).
       #   See its documentation to learn which options are available.
       # @param cloud_storage_bucket_options [Hash, nil] Additional options to pass to
-      #   {https://googleapis.dev/ruby/google-cloud-storage/latest/Google/Cloud/Storage/Project.html#bucket-instance_method Google::Cloud::Storage::Project#bucket}.
+      #   [Google::Cloud::Storage::Project#bucket](https://googleapis.dev/ruby/google-cloud-storage/latest/Google/Cloud/Storage/Project.html#bucket-instance_method).
       #   See its documentation to learn which options are available.
       #
       # @note The logger must either be thread-safe, or all writes to this logger by anything besides
@@ -256,7 +257,7 @@ module DistributedLock
       # obtained by some other instance identity, waits until it becomes available,
       # or until timeout.
       #
-      # Accepts the same parameters as #lock.
+      # Accepts the same parameters as {#lock}.
       #
       # @return The block's return value.
       # @raise [AlreadyLockedError] This Lock instance — according to its internal state — believes
@@ -273,10 +274,10 @@ module DistributedLock
 
       # Pretends like we've never obtained this lock, abandoning our internal state about the lock.
       #
-      # Shuts down background lock refreshing, and ensures that
-      # #locked_according_to_internal_state? returns false.
+      # Shuts down background lock refreshing, and ensures that {#locked_according_to_internal_state?}
+      # returns false.
       #
-      # Does not modify any server data, so #locked_according_to_server? may still return true.
+      # Does not modify any server data, so {#locked_according_to_server?} may still return true.
       #
       # @return [void]
       def abandon
@@ -302,10 +303,13 @@ module DistributedLock
       # Returns whether the lock is healthy. A lock is considered healthy until
       # we fail to refresh the lock too many times consecutively.
       #
-      # Failure to refresh could happen for many reasons, including but not limited
-      # to: network problems, the lock object being forcefully deleted by someone else.
+      # Failure to refresh could happen for many reasons. Some failures are temporary, such
+      # as network problems. Others are permanent, such as the lock object being forcefully
+      # deleted by someone else.
       #
-      # "Too many" is defined by the `max_refresh_fails` argument passed to the constructor.
+      # Upon encountering a permanent failure, the lock is immediately declared unhealthy.
+      # Upon encountering a temporary failure, the lock is declared unhealthy after encountering
+      # a temporary error `max_refresh_fails` times consecutively.
       #
       # It only makes sense to call this method after having obtained this lock.
       #
@@ -318,7 +322,7 @@ module DistributedLock
         end
       end
 
-      # Checks whether the lock is healthy. See #healthy? for the definition of "healthy".
+      # Checks whether the lock is healthy. See {#healthy?} for the definition of "healthy".
       #
       # It only makes sense to call this method after having obtained this lock.
       #

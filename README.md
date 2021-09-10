@@ -46,6 +46,8 @@ gem 'distributed-lock-google-cloud-storage'
 
 ## Usage
 
+> See also the [full API docs](https://foobarwidget.github.io/distributed-lock-google-cloud-storage-ruby/DistributedLock/GoogleCloudStorage/Lock.html)
+
 Initialize a Lock instance. It must be backed by a Google Cloud Storage bucket and object. Then do your work within a `#synchronize` block.
 
 **Important:** If your work is a long-running operation, then also be sure to call `#check_health!` _periodically_ to check whether the lock is still healthy. This call throws an exception if it's not healthy. Learn more in [Long-running operations, lock refreshing and lock health checking](#long-running-operations-lock-refreshing-and-lock-health-checking).
@@ -154,6 +156,10 @@ DistributedLock::GoogleCloudStorage::Lock(
   logger: logger,
 )
 ~~~
+
+### API docs
+
+The full API docs are [here](https://foobarwidget.github.io/distributed-lock-google-cloud-storage-ruby/DistributedLock/GoogleCloudStorage/Lock.html).
 
 ## Contributing
 

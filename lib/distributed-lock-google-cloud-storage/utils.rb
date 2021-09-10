@@ -2,6 +2,7 @@
 
 module DistributedLock
   module GoogleCloudStorage
+    # @!visibility private
     module Utils
       private
 
