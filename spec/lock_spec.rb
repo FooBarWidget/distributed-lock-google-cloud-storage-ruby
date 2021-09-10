@@ -120,6 +120,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
 
       @lock2 = create(backoff_min: 0.05, backoff_max: 0.05, logger: logger2)
       @thread = Thread.new do
+        Thread.current.report_on_exception = false
         @lock2.lock(timeout: DEFAULT_TIMEOUT)
         Thread.current[:result] = {
           locked_according_to_internal_state: @lock2.locked_according_to_internal_state?,
