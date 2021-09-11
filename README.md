@@ -28,6 +28,8 @@ The most important error condition is that clients of the lock could leave unexp
 
 ### Comparisons with alternatives
 
+#### Compared to other Cloud Storage locks
+
 Other distributed locks based on Google Cloud Storage include:
 
  * [gcslock](https://github.com/mco-gh/gcslock)
@@ -35,6 +37,12 @@ Other distributed locks based on Google Cloud Storage include:
  * [gcslock-ruby](https://github.com/XaF/gcslock-ruby)
 
 In designing my own algorithm, I've carefully examined the above alternatives (and more). They all have various issues, including being prone to crashes, utilizing unbounded backoff, being prone to unintended lock releases due to networking issues, and more. My algorithm addresses all issues not addressed by the above alternatives. Please read [the algorithm design](https://www.joyfulbikeshedding.com/blog/2021-05-19-robust-distributed-locking-algorithm-based-on-google-cloud-storage.html) to learn more.
+
+#### Compared to Redis locks
+
+Redis is also a popular system for building distributed locks on top of (for example [Redlock](https://redis.io/topics/distlock)). Like our lock, Redis-based locks often support auto-recovery of stale locks via timeouts. But they are often unsafe because they don't sufficiently take into account for the fact that a lock can become stale due to long-running operations, arbitrary network and compute delays, etc. Martin Kleppmann has [written an extensive critique](https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html) about this issue.
+
+Our lock addresses this issue through the use of [lock refreshing and lock healthchecking](#long-running-operations-lock-refreshing-and-lock-health-checking).
 
 ## Installation
 
