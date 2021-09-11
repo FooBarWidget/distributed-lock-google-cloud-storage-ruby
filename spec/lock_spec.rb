@@ -81,6 +81,10 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(lock).not_to be_owned_according_to_server
     end
 
+    it 'has no refresh error' do
+      expect(lock.last_refresh_error).to be_nil
+    end
+
     specify 'checking for health is not possible due to being unlocked' do
       expect { lock.healthy? }.to \
         raise_error(DistributedLock::GoogleCloudStorage::NotLockedError)
@@ -113,6 +117,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_owned_according_to_internal_state
       expect(@lock).to be_owned_according_to_server
       expect(@lock).to be_healthy
+      expect(@lock.last_refresh_error).to be_nil
       expect { @lock.check_health! }.not_to raise_error
     end
 
@@ -131,6 +136,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
           owned_according_to_internal_state: @lock2.owned_according_to_internal_state?,
           owned_according_to_server: @lock2.owned_according_to_server?,
           healthy: @lock2.healthy?,
+          last_refresh_error: @lock2.last_refresh_error,
         }
       end
 
@@ -155,6 +161,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(result[:owned_according_to_internal_state]).to be_truthy
       expect(result[:owned_according_to_server]).to be_truthy
       expect(result[:healthy]).to be_truthy
+      expect(result[:last_refresh_error]).to be_nil
     end
 
     it 'raises AlreadyLockedError if called twice by the same instance and thread' do
@@ -183,6 +190,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_owned_according_to_internal_state
       expect(@lock).to be_owned_according_to_server
       expect(@lock).to be_healthy
+      expect(@lock.last_refresh_error).to be_nil
       expect { @lock.check_health! }.not_to raise_error
     end
 
@@ -209,6 +217,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_owned_according_to_internal_state
       expect(@lock).to be_owned_according_to_server
       expect(@lock).to be_healthy
+      expect(@lock.last_refresh_error).to be_nil
       expect { @lock.check_health! }.not_to raise_error
     end
 
@@ -224,6 +233,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_owned_according_to_internal_state
       expect(@lock).to be_owned_according_to_server
       expect(@lock).to be_healthy
+      expect(@lock.last_refresh_error).to be_nil
       expect { @lock.check_health! }.not_to raise_error
     end
 
@@ -238,6 +248,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect(@lock).to be_owned_according_to_internal_state
       expect(@lock).to be_owned_according_to_server
       expect(@lock).to be_healthy
+      expect(@lock.last_refresh_error).to be_nil
       expect { @lock.check_health! }.not_to raise_error
     end
   end
@@ -245,13 +256,17 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
 
   describe '#unlock' do
     after :each do
-      @lock.abandon if @lock
+      if @lock
+        @lock.abandon
+        raise @lock.last_refresh_error if exception_to_retry?(@lock.last_refresh_error)
+      end
     end
 
     def lock_and_unlock
       @lock.lock(timeout: 0)
       deleted = nil
-      expect { deleted = @lock.unlock }.not_to raise_error
+      e = catch_non_retryable_exception { deleted = @lock.unlock }
+      expect(e).to be_nil
       deleted
     end
 
@@ -292,8 +307,11 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
 
       @lock.lock(timeout: 0)
       force_erase_lock_object
+
       deleted = nil
-      expect { deleted = @lock.unlock }.not_to raise_error
+      e = catch_non_retryable_exception { deleted = @lock.unlock }
+
+      expect(e).to be_nil
       expect(deleted).to be_falsey
       expect(@lock).not_to be_locked_according_to_internal_state
       expect(@lock).not_to be_locked_according_to_server
@@ -326,7 +344,10 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
     end
 
     after :each do
-      @lock.abandon if @lock
+      if @lock
+        @lock.abandon
+        raise @lock.last_refresh_error if exception_to_retry?(@lock.last_refresh_error)
+      end
     end
 
     it 'updates the update time' do
@@ -348,12 +369,13 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
         f.metadata['something'] = '123'
       end
       expect(file.metageneration).not_to eq(orig_metageneration)
-      eventually(timeout: 10) do
+      eventually(timeout: 30) do
         !@lock.healthy?
       end
       expect { @lock.check_health! }.to \
         raise_error(DistributedLock::GoogleCloudStorage::LockUnhealthyError)
       expect(log_output.string).to include('Lock object has an unexpected metageneration number')
+      expect(@lock.last_refresh_error).not_to be_nil
     end
 
     it 'declares unhealthiness when the lock object is deleted' do
@@ -370,6 +392,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       expect { @lock.check_health! }.to \
         raise_error(DistributedLock::GoogleCloudStorage::LockUnhealthyError)
       expect(log_output.string).to include('Lock object has been unexpectedly deleted')
+      expect(@lock.last_refresh_error).not_to be_nil
     end
   end
 end

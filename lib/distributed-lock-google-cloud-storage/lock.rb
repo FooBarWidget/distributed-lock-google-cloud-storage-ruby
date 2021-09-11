@@ -120,6 +120,7 @@ module DistributedLock
         @owner = nil
         @metageneration = nil
         @refresher_thread = nil
+        @refresher_error = nil
 
         # The refresher generation is incremented every time we shutdown
         # the refresher thread. It allows the refresher thread to know
@@ -315,6 +316,7 @@ module DistributedLock
       #
       # @return [Boolean]
       # @raise [NotLockedError] This lock was not obtained.
+      # @see #last_refresh_error
       def healthy?
         @state_mutex.synchronize do
           raise NotLockedError, 'Not locked' if !unsynced_locked_according_to_internal_state?
@@ -323,6 +325,8 @@ module DistributedLock
       end
 
       # Checks whether the lock is healthy. See {#healthy?} for the definition of "healthy".
+      # Use {#last_refresh_error} to query the last error that caused the lock to be declared
+      # unhealthy.
       #
       # It only makes sense to call this method after having obtained this lock.
       #
@@ -331,6 +335,19 @@ module DistributedLock
       # @raise [NotLockedError] This lock was not obtained.
       def check_health!
         raise LockUnhealthyError, 'Lock is not healthy' if !healthy?
+      end
+
+      # Returns the last error that caused the lock to be declared unhealthy.
+      #
+      # Don't use this method to check whether the lock is _currently_ healthy.
+      # If this lock has ever been unhealthy, then this method returns a non-nil value
+      # even if the lock is currently healthy.
+      #
+      # @return [StandardError, nil]
+      def last_refresh_error
+        @state_mutex.synchronize do
+          @refresher_error
+        end
       end
 
 
@@ -565,7 +582,17 @@ module DistributedLock
           end
           log_debug { "Done refreshing lock. metageneration=#{file.metageneration}" }
           true
+
         rescue => e
+          @state_mutex.synchronize do
+            if @refresher_generation != refresher_generation
+              log_debug { 'Abort refreshing lock' }
+              return true
+            end
+
+            @refresher_error = e
+          end
+
           log_error { "Error refreshing lock: #{e}" }
           [false, permanent_failure]
         end
