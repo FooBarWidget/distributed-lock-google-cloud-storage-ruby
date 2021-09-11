@@ -106,6 +106,10 @@
 
 <h2 id="usage">Usage</h2>
 
+<blockquote>
+<p>See also the <a href="https://foobarwidget.github.io/distributed-lock-google-cloud-storage-ruby/DistributedLock/GoogleCloudStorage/Lock.html">full API docs</a></p>
+</blockquote>
+
 <p>Initialize a Lock instance. It must be backed by a Google Cloud Storage bucket and object. Then do your work within a <code>#synchronize</code> block.</p>
 
 <p><strong>Important:</strong> If your work is a long-running operation, then also be sure to call <code>#check_health!</code> <em>periodically</em> to check whether the lock is still healthy. This call throws an exception if it&#39;s not healthy. Learn more in <a href="#long-running-operations-lock-refreshing-and-lock-health-checking">Long-running operations, lock refreshing and lock health checking</a>.</p>
@@ -217,13 +221,17 @@
 <span class='rparen'>)</span>
 </code></pre>
 
+<h3 id="api-docs">API docs</h3>
+
+<p>The full API docs are <a href="https://foobarwidget.github.io/distributed-lock-google-cloud-storage-ruby/DistributedLock/GoogleCloudStorage/Lock.html">here</a>.</p>
+
 <h2 id="contributing">Contributing</h2>
 
 <p>Please read the <a href="CONTRIBUTING.md">Contribution guide</a>.</p>
 </div></div>
 
       <div id="footer">
-  Generated on Thu Sep  9 19:12:16 2021 by
+  Generated on Sat Sep 11 07:47:19 2021 by
   <a href="http://yardoc.org" title="Yay! A Ruby Documentation Tool" target="_parent">yard</a>
   0.9.26 (ruby-2.7.4).
 </div>
