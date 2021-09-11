@@ -6,7 +6,7 @@ require_relative '../lib/distributed-lock-google-cloud-storage/utils'
 
 RSpec.describe DistributedLock::GoogleCloudStorage::Utils do
   describe '.retry_with_backoff_until_success' do
-    class UtilsHolder
+    class UtilsHolder  # rubocop:disable Lint/ConstantDefinitionInBlock
       include DistributedLock::GoogleCloudStorage::Utils
       public :retry_with_backoff_until_success
     end
@@ -102,7 +102,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Utils do
 
 
   describe '.work_regularly' do
-    class UtilsHolder
+    class UtilsHolder  # rubocop:disable Lint/ConstantDefinitionInBlock
       include DistributedLock::GoogleCloudStorage::Utils
       public :work_regularly
     end

@@ -69,6 +69,9 @@ jobs:
           TEST_GCLOUD_BUCKET: ${{ secrets.TEST_GCLOUD_BUCKET }}
           TEST_GCLOUD_CREDENTIALS_PATH: credentials.json
 
+      - name: Run Rubocop
+        run: bundle exec rake rubocop
+
       - name: Generate Yard API docs
         run: bundle exec yard && touch doc/.nojekyll
 

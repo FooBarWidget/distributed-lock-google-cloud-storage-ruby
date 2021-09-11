@@ -7,8 +7,8 @@ require_relative 'spec_helper'
 require_relative '../lib/distributed-lock-google-cloud-storage/lock'
 
 RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
-  DEFAULT_TIMEOUT = 15
-  LOCK_PATH = "ruby-lock.#{SecureRandom.hex(16)}.#{Process.pid}"
+  DEFAULT_TIMEOUT = 15  # rubocop:disable Lint/ConstantDefinitionInBlock
+  LOCK_PATH = "ruby-lock.#{SecureRandom.hex(16)}.#{Process.pid}"  # rubocop:disable Lint/ConstantDefinitionInBlock
 
   around(:each) do |ex|
     ex.run_with_retry retry: 3
@@ -40,7 +40,10 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
 
   def gcloud_bucket(**options)
     @bucket ||= begin
-      storage = Google::Cloud::Storage.new(credentials: require_envvar('TEST_GCLOUD_CREDENTIALS_PATH'))
+      storage = Google::Cloud::Storage.new(
+        credentials: require_envvar('TEST_GCLOUD_CREDENTIALS_PATH'),
+        **options,
+      )
       storage.bucket(require_envvar('TEST_GCLOUD_BUCKET'), skip_lookup: true)
     end
   end
@@ -361,7 +364,7 @@ RSpec.describe DistributedLock::GoogleCloudStorage::Lock do
       force_erase_lock_object
       logger_mutex.synchronize { logger.debug 'End erasing lock object' }
 
-      eventually(timeout: 5) do
+      eventually(timeout: 30) do
         !@lock.healthy?
       end
       expect { @lock.check_health! }.to \

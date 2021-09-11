@@ -7,13 +7,16 @@ gemspec
 group :development do
   gem 'pry'
   gem 'byebug'
-  gem 'rubocop'
 end
 
 group :development, :ci do
   gem 'sord'
+  gem 'rake'
   gem 'redcarpet'
   gem 'rspec'
   gem 'rspec-retry'
+  gem 'rubocop'
+  gem 'rubocop-rake'
+  gem 'rubocop-rspec'
   gem 'dotenv'
 end

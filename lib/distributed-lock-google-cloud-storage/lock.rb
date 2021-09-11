@@ -433,9 +433,7 @@ module DistributedLock
       def delete_lock_object(expected_metageneration)
         file = @bucket.file(@path, skip_lookup: true)
         file.delete(if_metageneration_match: expected_metageneration)
-      rescue Google::Cloud::NotFoundError
-        false
-      rescue Google::Cloud::FailedPreconditionError
+      rescue Google::Cloud::NotFoundError, Google::Cloud::FailedPreconditionError
         false
       end
 
