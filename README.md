@@ -48,7 +48,7 @@ Our lock addresses this issue through the use of [lock refreshing and lock healt
 
 Add to your Gemfile:
 
-~~~Gemfile
+~~~ruby
 gem 'distributed-lock-google-cloud-storage'
 ~~~
 
