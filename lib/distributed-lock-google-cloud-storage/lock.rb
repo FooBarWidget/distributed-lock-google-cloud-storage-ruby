@@ -13,6 +13,7 @@ module DistributedLock
     class Lock
       # @!visibility private
       DEFAULT_INSTANCE_IDENTITY_PREFIX_WITHOUT_PID = SecureRandom.hex(12).freeze
+      private_constant(:DEFAULT_INSTANCE_IDENTITY_PREFIX_WITHOUT_PID)
 
       include Utils
 
