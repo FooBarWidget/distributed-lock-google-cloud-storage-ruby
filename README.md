@@ -63,7 +63,7 @@ Initialize a Lock instance. It must be backed by a Google Cloud Storage bucket a
 ~~~ruby
 require 'distributed-lock-google-cloud-storage'
 
-lock = DistributedLock::GoogleCloudStorage::Lock(
+lock = DistributedLock::GoogleCloudStorage::Lock.new(
   bucket_name: 'your bucket name',
   path: 'locks/mywork')
 lock.synchronize do
