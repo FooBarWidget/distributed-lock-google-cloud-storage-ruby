@@ -295,7 +295,7 @@ module DistributedLock
         if thread
           log_debug { "Abandoning locked lock" }
           thread.join
-          log_debug { "Done abandoned locked lock. refresher_generation=#{refresher_generation}" }
+          log_debug { "Done abandoning locked lock. refresher_generation=#{refresher_generation}" }
         else
           log_debug { "Abandoning unlocked lock" }
         end
