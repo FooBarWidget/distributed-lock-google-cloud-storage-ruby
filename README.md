@@ -108,7 +108,7 @@ So the TTL should be generous, in the order of minutes. The default is 5 minutes
 
 If you perform an operation inside the lock that *might* take longer than the TTL, then we call that a _long-running operation_. Performing such long-running operations is safe: you generally don't have to worry about the lock become stale during the operation. But you need to be aware of caveats.
 
-We support long-running operations by _refreshing_ the lock's timestamp once in a while so that the lock does not become stale. This refreshing happens automatically in a background thread. It happens. The behavior of this refreshing operation is configurable through the `refresh_interval` and `max_refresh_fails` parameters in the constructor.
+We support long-running operations by _refreshing_ the lock's timestamp once in a while so that the lock does not become stale. This refreshing happens automatically in a background thread. The behavior of this refreshing operation is configurable through the `refresh_interval` and `max_refresh_fails` parameters in the constructor.
 
 Refreshing _could_ fail, for example because of a network delays, or because some other client _still_ concluded that the lock is stale and took over ownership of the lock, or because something else unexpected happened to the object. If refreshing fails too many times consecutively, then we declare the lock as _unhealthy_.
 
